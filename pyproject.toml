@@ -1,0 +1,11 @@
+[project]
+name = "ai-npc"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "langgraph",
+    "python-dotenv",
+    "httpx"
+]

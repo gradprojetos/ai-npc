@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  llm_gateway:
+    build:
+      context: .
+      dockerfile: llm_gateway/Dockerfile
+    container_name: llm_gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    networks:
+      - network
+
+networks:
+ network:
+    driver: bridge
