@@ -1,83 +1,79 @@
-# Sistema de NPC conversacional para RPGs educacionais
+# Sistema de NPC Conversacional para RPGs Educacionais
 
-## Roadmap (4 Meses)
-
-### Equipe
-- **Estudante 1 (Foco em IA, NLP e Dados):** Isaac
-- **Estudante 2 (Foco em Backend, Integração e Infra):** Murillo
-
-### Mês 1: Agosto (Fundamentação e Setup Base)
-**Estudante 1:**
-- Sobe o LLM Gateway (API do IC) e realiza testes básicos de chamadas de IA.
-
-**Estudante 2:**
-- Sobe o PostgreSQL, cria os esquemas das tabelas e configura o esqueleto da API Interna (FastAPI).
-
-**Ambos:**
-- Criação do repositório, configuração do Docker Compose e conexão inicial do Telegram Bot ecoando mensagens para a API Interna.
-
-### Mês 2: Setembro (Lógica de Jogo e Memória)
-**Estudante 1:**
-- Implementa o fluxo básico do LangGraph (Estado RPGGraphState).
-
-**Estudante 2:**
-- Implementa as rotas de criação de sessão e o Motor de RPG (atualização de atributos e progressão).
-
-**Ambos:**
-- O Bot do Telegram já consegue conversar com o LLM através da API Interna, lendo o estado base do jogo.
-
-### Mês 3: Outubro (Integração e Guardrails)
-**Estudante 1:**
-- Desenvolve e acopla o contêiner do Motor de Guardrails no fluxo, testando bloqueios semânticos e validações pedagógicas (Nvidia Guardrail).
-
-**Estudante 2:**
-- Finaliza a orquestração assíncrona na API Interna (roteamento completo: Telegram → FastAPI → Guardrail → LangGraph → Banco → LLM → Telegram).
-
-**Ambos:**
-- Testes de integração. O sistema deve barrar respostas erradas e atualizar o estado do jogo e o inventário automaticamente.
-
-### Mês 4: Novembro (Validação e Relatório)
-**Estudante 1:**
-- Tuning de prompts e métricas de qualidade (avaliação de coerência do NPC e dos limites do guardrail), Langfuse.
-
-**Estudante 2:**
-- Testes de carga, tratamento de concorrência e logs de erro, Langfuse.
-
-**Ambos:**
-- Playtesting (sessões testes no Telegram com usuários), coleta de dados, correção de falhas e redação final do PFG.
+Sistema de NPCs com IA conversacional para jogos educacionais, integrado com Telegram e LLMs. Desenvolvimento em paralelo com separação clara de responsabilidades.
 
 ---
 
-## Estrutura do Projeto
+## 👥 Equipe
 
-### Organização por Serviços
+| Função | Responsável |
+|--------|------------|
+| **IA, NLP e Dados** | Isaac |
+| **Backend, Integração e Infra** | Murillo |
 
-Cada serviço tem sua própria pasta, seu próprio `Dockerfile` e seu próprio arquivo de dependências (`requirements.txt`, `pyproject.toml`, etc.). Se o Estudante 1 mexe no Guardrail e o Estudante 2 no Bot, eles nunca tocarão nos mesmos arquivos.
+---
+
+## 📅 Roadmap (4 Meses)
+
+| Mês | Foco | Isaac | Murillo | Entrega |
+|-----|------|-------|---------|---------|
+| **Ago** | Setup | LLM Gateway + testes | PostgreSQL + FastAPI | Bot ecoando mensagens |
+| **Set** | Lógica | LangGraph (RPGGraphState) | Motor RPG + rotas | Bot conversando com IA |
+| **Out** | Integração | Motor Guardrails (Nvidia) | Orquestração assíncrona | Sistema com validações |
+| **Nov** | Validação | Tuning + métricas (Langfuse) | Testes de carga (Langfuse) | Playtesting + PFG |
+
+---
+
+## 🏗️ Arquitetura
+
+### Estrutura de Pastas
 
 ```
-meu-projeto-rpg/
-├── docker-compose.yml          # Propriedade compartilhada
-├── /telegram-bot               # Domínio do E2
-├── /motor-guardrails           # Domínio do E1
-├── /llm-gateway                # Domínio do E1
-├── /db-init                    # Scripts SQL (Domínio do E2)
-└── /api-interna                # Área de Interseção (Atenção aqui)
+projeto-rpg/
+├── docker-compose.yml          # Compartilhado
+├── /telegram-bot               # E2
+├── /motor-guardrails           # E1
+├── /llm-gateway                # E1
+├── /db-init                    # E2
+└── /api-interna                # Ambos (módulos isolados)
 ```
 
-### Tratando a Área de Interseção (/api-interna)
-
-A `api-interna` é o único lugar onde os dois vão trabalhar juntos (E2 faz as rotas e regras do RPG, E1 faz o grafo do LangGraph). Para não dar conflito nessa pasta, separe a aplicação em módulos isolados:
+### Módulos da API Interna
 
 ```
 /api-interna
-├── /routers            # E2: Endpoints REST/WebSockets (entrada do Telegram)
-├── /motor_rpg          # E2: Lógica de estado e consultas ao banco
-├── /ia_core            # E1: Nós do LangGraph e integração com pgvector
-├── /schemas            # Compartilhado: Modelos Pydantic (os contratos)
-└── main.py             # E2: Apenas importa os routers
+├── /routers            # E2: Endpoints REST/WebSockets
+├── /motor_rpg          # E2: Lógica de estado e banco
+├── /ia_core            # E1: LangGraph + pgvector
+├── /schemas            # Ambos: Modelos Pydantic
+└── main.py             # E2: Orquestra tudo
 ```
 
-**Convenção de Trabalho:**
-- **E1 (Isaac):** Trabalha em `/ia_core/` e garante que os nós do LangGraph recebem e retornam dados conforme os modelos Pydantic definidos em `/schemas/`.
-- **E2 (Murillo):** Trabalha em `/routers/` e `/motor_rpg/`, garantindo que os endpoints chamam os nós de IA de forma correta.
-- **Compartilhado:** `/schemas/` contém os contratos de dados. Qualquer mudança aqui é comunicada para o outro para evitar incompatibilidades.
+**Regra de Ouro:** Cada estudante trabalha em seu domínio sem mexer no do outro. Apenas `/schemas/` é compartilhado (comunicar mudanças!).
+
+---
+
+## 🚀 Começar
+
+```bash
+# Clonar e configurar
+git clone https://github.com/gradprojetos/ai-npc.git
+cd ai-npc
+
+# Docker
+docker-compose up
+
+# Testes
+pytest
+```
+
+---
+
+## 📦 Stack Técnico
+
+- **LLM:** LangGraph, LLM Gateway (IC)
+- **Backend:** FastAPI, PostgreSQL, pgvector
+- **Telegram:** python-telegram-bot
+- **Guardrails:** Nvidia Guardrail
+- **Observabilidade:** Langfuse
+- **Deploy:** Docker, Docker Compose
