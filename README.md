@@ -45,3 +45,39 @@
 
 **Ambos:**
 - Playtesting (sessões testes no Telegram com usuários), coleta de dados, correção de falhas e redação final do PFG.
+
+---
+
+## Estrutura do Projeto
+
+### Organização por Serviços
+
+Cada serviço tem sua própria pasta, seu próprio `Dockerfile` e seu próprio arquivo de dependências (`requirements.txt`, `pyproject.toml`, etc.). Se o Estudante 1 mexe no Guardrail e o Estudante 2 no Bot, eles nunca tocarão nos mesmos arquivos.
+
+```
+meu-projeto-rpg/
+├── docker-compose.yml          # Propriedade compartilhada
+├── /telegram-bot               # Domínio do E2
+├── /motor-guardrails           # Domínio do E1
+├── /llm-gateway                # Domínio do E1
+├── /db-init                    # Scripts SQL (Domínio do E2)
+└── /api-interna                # Área de Interseção (Atenção aqui)
+```
+
+### Tratando a Área de Interseção (/api-interna)
+
+A `api-interna` é o único lugar onde os dois vão trabalhar juntos (E2 faz as rotas e regras do RPG, E1 faz o grafo do LangGraph). Para não dar conflito nessa pasta, separe a aplicação em módulos isolados:
+
+```
+/api-interna
+├── /routers            # E2: Endpoints REST/WebSockets (entrada do Telegram)
+├── /motor_rpg          # E2: Lógica de estado e consultas ao banco
+├── /ia_core            # E1: Nós do LangGraph e integração com pgvector
+├── /schemas            # Compartilhado: Modelos Pydantic (os contratos)
+└── main.py             # E2: Apenas importa os routers
+```
+
+**Convenção de Trabalho:**
+- **E1 (Isaac):** Trabalha em `/ia_core/` e garante que os nós do LangGraph recebem e retornam dados conforme os modelos Pydantic definidos em `/schemas/`.
+- **E2 (Murillo):** Trabalha em `/routers/` e `/motor_rpg/`, garantindo que os endpoints chamam os nós de IA de forma correta.
+- **Compartilhado:** `/schemas/` contém os contratos de dados. Qualquer mudança aqui é comunicada para o outro para evitar incompatibilidades.
