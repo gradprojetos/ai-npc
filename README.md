@@ -8,8 +8,8 @@ Sistema de NPCs com IA conversacional para jogos educacionais, integrado com Tel
 
 | Função | Responsável |
 |--------|------------|
-| **IA, NLP e Dados** | Isaac |
-| **Backend, Integração e Infra** | Murillo |
+| **IA, NLP e Dados** | Isaac (E1) |
+| **Backend, Integração e Infra** | Murillo (E2) |
 
 ---
 
@@ -17,7 +17,7 @@ Sistema de NPCs com IA conversacional para jogos educacionais, integrado com Tel
 
 | Mês | Foco | Isaac | Murillo | Entrega |
 |-----|------|-------|---------|---------|
-| **Ago** | Setup | LLM Gateway + testes | PostgreSQL + FastAPI | Bot ecoando mensagens |
+| **Ago** | Setup | LLM Gateway + testes | PostgreSQL + FastAPI | Telegram Bot ecoando mensagens da IA|
 | **Set** | Lógica | LangGraph (RPGGraphState) | Motor RPG + rotas | Bot conversando com IA |
 | **Out** | Integração | Motor Guardrails (Nvidia) | Orquestração assíncrona | Sistema com validações |
 | **Nov** | Validação | Tuning + métricas (Langfuse) | Testes de carga (Langfuse) | Playtesting + PFG |
