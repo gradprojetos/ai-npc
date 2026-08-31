@@ -61,10 +61,7 @@ git clone https://github.com/gradprojetos/ai-npc.git
 cd ai-npc
 
 # Docker
-docker-compose up
-
-# Testes
-pytest
+docker compose up -d
 ```
 
 ---
