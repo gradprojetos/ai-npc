@@ -4,17 +4,21 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from api.models import Base
+from db.models import Base
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+postgres_user = os.getenv("POSTGRES_USER", "postgres")
+postgres_password = os.getenv("POSTGRES_PASSWORD", "postgres")
+postgres_host = os.getenv("POSTGRES_HOST", "postgres")
+postgres_port = os.getenv("POSTGRES_PORT", "5432")
+postgres_db = os.getenv("POSTGRES_DB", "postgres")
+
 database_url = (
-    f"postgresql+psycopg://{os.environ['POSTGRES_USER']}"
-    f":{os.environ['POSTGRES_PASSWORD']}@postgres:5432/"
-    f"{os.environ['POSTGRES_DB']}"
+    f"postgresql+psycopg://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}"
 )
 config.set_main_option("sqlalchemy.url", database_url)
 

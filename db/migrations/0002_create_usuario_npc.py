@@ -23,8 +23,15 @@ def upgrade() -> None:
             server_default=sa.text("gen_random_uuid()"),
             nullable=False,
         ),
+        sa.Column(
+            "telegram_id",
+            sa.BigInteger(),
+            nullable=True,
+            unique=True,
+            index=True,
+        ),
         sa.Column("nome", sa.String(length=255), nullable=False),
-        sa.Column("email", sa.String(length=255), nullable=False),
+        # sa.Column("email", sa.String(length=255), nullable=True),
         sa.Column(
             "data_criacao",
             sa.DateTime(timezone=True),
@@ -32,7 +39,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id_usuario"),
-        sa.UniqueConstraint("email"),
+        # sa.UniqueConstraint("email"),
     )
     op.create_table(
         "npc",

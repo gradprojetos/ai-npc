@@ -3,7 +3,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, String, Text, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -21,8 +21,14 @@ class Usuario(Base):
         default=uuid4,
         server_default=text("gen_random_uuid()"),
     )
+    telegram_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        unique=True,
+        index=True,
+        nullable=True,
+    )
     nome: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     data_criacao: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -61,11 +67,6 @@ class SessaoJogo(Base):
     id_usuario: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         ForeignKey("usuario.id_usuario", ondelete="CASCADE"),
-        nullable=False,
-    )
-    id_npc: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("npc.id_npc", ondelete="CASCADE"),
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -117,10 +118,10 @@ class HistoricoMensagens(Base):
     )
     remetente: Mapped[str] = mapped_column(String(50), nullable=False)
     conteudo: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(1536),
-        nullable=True,
-    )
+    # embedding: Mapped[list[float] | None] = mapped_column(
+    #     Vector(1536),
+    #     nullable=True,
+    # )
     criado_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
