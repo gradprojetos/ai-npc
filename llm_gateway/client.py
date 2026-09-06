@@ -13,7 +13,7 @@ DEFAULT_LLM_URL = "https://llm.ic.unicamp.br/api/chat/completions"
 DEFAULT_LLM_MODEL = "gemma4:e4b"
 DEFAULT_REQUEST_TIMEOUT = 60.0
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_MAX_TOKENS = 150
+DEFAULT_MAX_TOKENS = 200
 
 
 class LLMClient:
@@ -54,7 +54,9 @@ class LLMClient:
         payload: dict[str, Any] = {
             "model": self.model,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "options": {
+                "num_preditct": max_tokens, # formato do ollama, eh um corte abrupto (teto), e não uma qtd a ser gerada
+            },
             "messages": messages,
         }
 
