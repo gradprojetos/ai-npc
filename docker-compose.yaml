@@ -1,8 +1,10 @@
-version: '3.8'
+name: ai-npc
 
 services:
   db_init:
-    build: .
+    build:
+      context: .
+      dockerfile: db_init/Dockerfile
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -11,7 +13,7 @@ services:
       postgres:
         condition: service_healthy
     command:
-      sh -c "alembic upgrade head && python db_init/db_init.py"
+      sh -c "uv run alembic upgrade head && uv run python db_init/db_init.py"
 
   llm_gateway:
     build:
@@ -27,7 +29,7 @@ services:
     networks:
       - network
   postgres:
-    image: postgres:17
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}

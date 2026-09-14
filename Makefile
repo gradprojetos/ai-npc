@@ -1,5 +1,5 @@
 migration:
-	docker compose exec app alembic revision --autogenerate -m "$(name)"
+	docker compose run --rm db_init uv run alembic revision --autogenerate -m "$(name)"
 
 migrate:
-	docker compose exec app alembic upgrade head
+	docker compose run --rm db_init uv run alembic upgrade head
