@@ -7,5 +7,9 @@ dependencies = [
     "uvicorn",
     "langgraph",
     "python-dotenv",
-    "httpx"
+    "httpx",
+    "alembic",
+    "sqlalchemy",
+    "pgvector",
+    "psycopg[binary]"
 ]
