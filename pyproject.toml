@@ -11,5 +11,6 @@ dependencies = [
     "alembic",
     "sqlalchemy",
     "pgvector",
-    "psycopg[binary]"
+    "psycopg[binary]",
+    "python-telegram-bot[job-queue]"
 ]

@@ -25,7 +25,6 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("id_usuario", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("id_npc", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column(
             "criado_em",
@@ -33,7 +32,6 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(["id_npc"], ["npc.id_npc"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(
             ["id_usuario"], ["usuario.id_usuario"], ondelete="CASCADE"
         ),
