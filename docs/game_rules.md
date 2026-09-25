@@ -55,15 +55,17 @@ Loomis mantém quatro criaturas enjauladas na clareira:
 
 O Motor RPG (em Python) é o árbitro matemático das regras:
 
-1. **Ciclo de Turno:**
-   * O monstro age primeiro (ou por iniciativa).
-   * O herói escolhe sua ação (atacar, usar poder especial, defender ou conversar).
-   * O motor calcula a rolagem: `d20 + bonus >= CA_alvo`.
-   * Se acertar: subtrai dano dos pontos de vida da criatura.
+1. **Ciclo de Turno e Multiplayer (1 a 4 Jogadores):**
+   * **Iniciativa:** Os herois agem em ordem de participacao no grupo do Telegram.
+   * **Turno Encadeado:** Quando o heroi da vez escolhe sua acao (atacar, usar poder especial ou conversar):
+     * O motor calcula a rolagem do heroi: `d20 + bonus >= CA_alvo`. Se acertar, subtrai dano do monstro.
+     * Se o monstro permanecer vivo apos o golpe, a criatura executa imediatamente o seu contra-ataque contra um dos herois ativos.
+     * O resultado completo (golpe do heroi + revide do monstro) e sintetizado na narrativa do Loomis em 1a pessoa, passando a vez ao proximo heroi.
 2. **Gatilhos Especiais do Loomis:**
-   * **Monstro em 50% de HP:** Se houver apenas um monstro na clareira e ele cair para metade da vida ou menos, Loomis destranca e abre a jaula seguinte.
-   * **Herói com 0 HP:** O herói cai inconsciente. Loomis interrompe a luta, arremessa uma poção com sabor de menta e limão e restaura a vida máxima do herói.
-   * **Todas as jaulas vazias / monstros derrotados:** Loomis parabeniza o aluno e concede a insígnia oficial de **Herói de Hesiod**.
+   * **Monstro em 50% de HP:** Se houver apenas um monstro na clareira e ele cair para metade da vida ou menos, Loomis destranca e abre a jaula seguinte como desafio extra.
+   * **Heroi com 0 HP:** O heroi cai inconsciente. Loomis interrompe a luta, arremessa uma pocao com sabor de menta e limao e restaura a vida maxima do heroi (`loomis_potion_used = True`). O aluno se levanta pronto para continuar sem perder a vez.
+   * **Todas as jaulas vazias / monstros derrotados:** Loomis parabeniza o grupo e concede a insignia oficial de **Heroi de Hesiod**.
+
 
 ---
 
@@ -101,9 +103,11 @@ graph TD
 ---
 
 ## 6. Divisão de Responsabilidades no Sistema
+ 
+ * **Motor RPG (`api/motor_rpg/`):**
+   * Controla os dados, classes, pontos de vida, cálculos matemáticos de acerto/dano, contra-ataque do monstro e a árvore de decisão determinística.
+ * **LangGraph e Estado (`api/ai_core/` e `api/schemas/`):**
+   * `GameState`: Mantem o estado consolidado da sessao (herois, fila de monstros, jaula atual, turns_history e buffer de recent_messages).
+   * `TurnRecord`: Registra o fato do turno resolvido deterministicamente pelo motor.
+   * **Nó Loomis (LLM):** Transforma os números calculados pelo motor em diálogos vivos, imersivos e em primeira pessoa no Telegram.
 
-* **Motor RPG (`api/motor_rpg/`):**
-  * Controla os dados, classes, pontos de vida, cálculos matemáticos de acerto/dano e a árvore de decisão.
-* **LangGraph e Estado (`api/ai_core/` e `api/schemas/`):**
-  * `RPGGraphState`: Carrega o estado atual (HP, jaula, histórico, herói).
-  * **Nó Loomis (LLM):** Transforma os números calculados pelo motor em diálogos vivos, imersivos e em primeira pessoa no Telegram.
