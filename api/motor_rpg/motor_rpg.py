@@ -7,7 +7,6 @@ from api.schemas.rpg import (
     HeroState,
     MonsterState,
     ActionResult,
-    ActionType,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,7 +152,6 @@ def create_hero(archetype_or_name: str, player_id: str = "player_1") -> HeroStat
         attack_bonus=data["attack_bonus"],
         attack_name=data["attack_name"],
         special_power=data["special_power"],
-        is_unconscious=False,
     )
 
 
@@ -172,8 +170,6 @@ def get_cage_monster(cage_number: int) -> MonsterState:
         attack_bonus=data["attack_bonus"],
         attack_name=data["attack_name"],
         abilities=list(data["abilities"]),
-        is_bound=False,
-        distance=0,
     )
 
 
@@ -193,9 +189,8 @@ def resolve_hero_attack(
     special_effects: list[str] = []
 
     # Poder Especial: Jorick (Investida)
-    if hero.name == "Jorick" and (is_far or monster.distance > 0):
+    if hero.name == "Jorick" and is_far:
         bonus += 2
-        monster.distance = 0
         special_effects.append("Investida (+2 no ataque por começar distante)")
 
     total_attack = d20 + bonus
@@ -231,7 +226,6 @@ def resolve_hero_attack(
     else:
         # Poder Especial: Yarrow (Grilhões Espectrais ao errar o ataque)
         if hero.name == "Yarrow":
-            monster.is_bound = True
             special_effects.append("Grilhões Espectrais (Ataque errou, mas espíritos prenderam o monstro ao solo!)")
 
     # Gatilhos do Loomis
@@ -268,7 +262,7 @@ def resolve_hero_attack(
     return ActionResult(
         attacker_name=hero.name,
         defender_name=monster.name,
-        action_type=ActionType.ATTACK.value,
+        action_type="atacar",
         d20_roll=d20,
         attack_bonus=bonus,
         total_attack=total_attack,
@@ -296,11 +290,6 @@ def resolve_monster_attack(
     """Executa a resolução determinística do ataque do monstro contra um herói."""
     special_effects: list[str] = []
 
-    # Monstro preso por Grilhões Espectrais
-    if monster.is_bound:
-        monster.is_bound = False
-        special_effects.append("Monstro estava preso pelos Grilhões Espectrais e perdeu a mobilidade neste turno!")
-
     d20 = forced_d20 if forced_d20 is not None else roll_dice(20)
     bonus = monster.attack_bonus
     total_attack = d20 + bonus
@@ -318,16 +307,14 @@ def resolve_monster_attack(
         else:
             damage = 1
 
-        # Poder Especial: Raen (Guerreira Feroz - empurra o monstro 2 casas ao ser atingida)
+        # Poder Especial: Raen (Guerreira Feroz - empurra o monstro ao ser atingida)
         if hero.name == "Raen":
-            monster.distance += 2
-            special_effects.append("Guerreira Feroz (Raen foi atingida e empurrou o monstro 2 casas para trás!)")
+            special_effects.append("Guerreira Feroz (Raen foi atingida e empurrou o monstro para trás!)")
 
         hero.hp = max(0, hero.hp - damage)
 
         # Gatilho 2 do Loomis: Herói com 0 HP
         if hero.hp == 0:
-            hero.is_unconscious = False  # Revivido imediatamente pelo Loomis
             hero.hp = hero.max_hp
             loomis_potion_used = True
             special_effects.append(
@@ -347,7 +334,7 @@ def resolve_monster_attack(
     return ActionResult(
         attacker_name=monster.name,
         defender_name=hero.name,
-        action_type=ActionType.ATTACK.value,
+        action_type="atacar",
         d20_roll=d20,
         attack_bonus=bonus,
         total_attack=total_attack,

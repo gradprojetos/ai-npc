@@ -8,7 +8,6 @@ from api.schemas.rpg import (
     MonsterState,
     RPGGraphState,
     ActionResult,
-    ActionType,
     Message,
 )
 from api.motor_rpg.motor_rpg import (

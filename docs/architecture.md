@@ -29,7 +29,7 @@ flowchart LR
     end
 
     subgraph BC_Persistencia["Bounded Context: Persistência Relacional (db/)"]
-        PostgreSQL[("PostgreSQL (sessao_jogo / heroi_sessao / monstro_sessao / historico_mensagens)")]
+        PostgreSQL[("PostgreSQL (sessions / heroes / monsters / messages / npcs)")]
     end
 
     TelegramBot -->|Mensagem / d20 Declarado| SessionMgr
@@ -93,7 +93,7 @@ classDiagram
 
     class NPCState {
         +str name
-        +str role
+        +str system_prompt
     }
 
     class Message {
@@ -120,81 +120,83 @@ classDiagram
 
 ### 2.1. Modelo Físico de Banco de Dados (PostgreSQL Relacional Normalizado)
 
-Em alinhamento com a arquitetura explícita, o banco de dados reflete **literalmente e campo a campo** as entidades do domínio, eliminando colunas opacas de JSONB (`variaveis_jogo`):
+Em alinhamento com a arquitetura explícita, o banco de dados reflete **literalmente e campo a campo** as entidades do domínio, eliminando colunas opacas de JSONB (`variaveis_jogo`) e inconsistências de nomenclatura:
 
 ```mermaid
 erDiagram
-    SESSAO_JOGO ||--o{ HEROI_SESSAO : "possui (1:N)"
-    SESSAO_JOGO ||--o{ MONSTRO_SESSAO : "enfrenta (1:N)"
-    SESSAO_JOGO ||--o{ HISTORICO_MENSAGENS : "registra (1:N)"
+    SESSIONS ||--o{ HEROES : "has (1:N)"
+    SESSIONS ||--o{ MONSTERS : "faces (1:N)"
+    SESSIONS ||--o{ MESSAGES : "records (1:N)"
 
-    SESSAO_JOGO {
-        UUID id_sessao PK
-        BigInteger chat_id UK "ID do grupo/chat do Telegram"
-        String status "'ativa', 'vitoria'"
-        String localizacao "'Clareira de Treino em Hesiod'"
-        DateTime criado_em
+    SESSIONS {
+        UUID session_id PK
+        BigInteger chat_id UK "Telegram group/chat ID"
+        String location "'Clareira de Treino em Hesiod'"
+        Boolean is_victory "Status de vitória final"
+        DateTime created_at
     }
 
-    HEROI_SESSAO {
-        UUID id_heroi PK
-        UUID id_sessao FK "Pertence à sessão"
-        String player_id "Telegram ID do jogador"
-        String nome "Jorick, Raen, Bet..."
-        String classe_nome "Guerreiro, Bárbara..."
+    HEROES {
+        UUID id PK
+        UUID session_id FK "Pertence à sessão"
+        String player_id "ID do jogador no Telegram"
+        String name "Jorick, Raen, Bet..."
+        String class_name "Guerreiro Humano, Bárbara Anã..."
         Integer hp "Pontos de vida atuais"
         Integer max_hp "Vida máxima"
         Integer ac "Classe de armadura"
         Integer attack_bonus "Bônus de ataque (+4, +5...)"
         String attack_name "Nome do ataque básico"
         String special_power "Regra do poder tático"
-        Integer ordem_iniciativa "Posição na fila circular (0, 1, 2...)"
     }
 
-    MONSTRO_SESSAO {
-        UUID id_monstro PK
-        UUID id_sessao FK "Pertence à sessão"
-        String nome "Bullette, Beholder..."
+    MONSTERS {
+        UUID id PK
+        UUID session_id FK "Pertence à sessão"
+        String name "Bullette, Beholder..."
         Integer cage_number "Número da jaula (1 a 4)"
         Integer hp "Pontos de vida atuais"
         Integer max_hp "Vida máxima"
         Integer ac "Classe de armadura"
         Integer attack_bonus "Bônus de ataque"
         String attack_name "Ataque da criatura"
-        JSONB abilities "Lista de habilidades especiais do monstro"
+        JSONB abilities "Lista de habilidades especiais (abilities: list[str])"
         Boolean is_defeated "Status de derrota"
     }
 
-    HISTORICO_MENSAGENS {
-        UUID id_mensagem PK
-        UUID id_sessao FK "Pertence à sessão"
-        String remetente "'Jogador', 'Loomis', 'Sistema'"
-        Text conteudo "Texto da mensagem"
-        DateTime criado_em
+    MESSAGES {
+        UUID id PK
+        UUID session_id FK "Pertence à sessão"
+        String sender "'Jogador', 'Loomis', 'Sistema'"
+        String role "'user', 'assistant', 'system'"
+        Text content "Texto da mensagem"
+        DateTime timestamp
     }
 
-    NPC {
-        UUID id_npc PK
-        String nome "Loomis"
-        String role "Treinador de Hesiod"
-        Text system_prompt "Prompt base da persona do treinador"
+    NPCS {
+        UUID id PK
+        String name "Loomis"
+        Text system_prompt "Prompt base da persona do NPC"
     }
 ```
 
-#### Vantagens do Modelo Relacional Literal:
+#### Vantagens do Modelo Relacional Literal 1:1:
 1. **Espelhamento 100% Literal com os States do Pydantic:**
-   * `HeroState` $\leftrightarrow$ Tabela `heroi_sessao`
-   * `MonsterState` $\leftrightarrow$ Tabela `monstro_sessao`
-   * `GameState` $\leftrightarrow$ `SessaoJogo` + listas filhas consultadas por `id_sessao`.
+   * `HeroState` $\leftrightarrow$ Tabela `heroes`
+   * `MonsterState` $\leftrightarrow$ Tabela `monsters`
+   * `Message` $\leftrightarrow$ Tabela `messages`
+   * `NPCState` $\leftrightarrow$ Tabela `npcs` (apenas `name` e `system_prompt`)
+   * `GameState` $\leftrightarrow$ `sessions` + coleções filhas consultadas por `session_id`.
+   * **Sem campos inventados:** Heróis não carregam colunas artificiais como `ordem_iniciativa` — a fila de turnos é a própria ordem da lista `players` em memória.
 2. **Consultas Simples e Rápidas (Zero JOINs Mirabolantes):**
-   * Carregar sessão: `db.query(HeroiSessao).filter_by(id_sessao=session_id).order_by(HeroiSessao.ordem_iniciativa).all()`
-   * Carregar monstro ativo: `db.query(MonstroSessao).filter_by(id_sessao=session_id, is_defeated=False).first()`
+   * Carregar heróis da sessão: `db.query(Hero).filter_by(session_id=session_id).all()`
+   * Carregar monstro ativo: `db.query(Monster).filter_by(session_id=session_id, is_defeated=False).first()`
 3. **Persistência Limpa via Dirty-Tracking do SQLAlchemy:**
    * Para aplicar o dano do turno:
      ```python
-     monstro.hp = novo_hp
-     if monstro.hp == 0:
-         monstro.is_defeated = True
+     monster.hp = new_hp
+     if monster.hp == 0:
+         monster.is_defeated = True
      db.commit() # O ORM executa o UPDATE pontual na coluna hp
      ```
 4. **Fácil Extensibilidade para Novas Histórias/Campanhas:**
@@ -217,7 +219,7 @@ sequenceDiagram
     participant Motor as MotorRPG (Regras)
     participant LLM as LLMClient (Loomis)
     participant LF as Langfuse (Observabilidade)
-    participant DB as PostgreSQL (sessao / heroi / monstro)
+    participant DB as PostgreSQL (sessions / heroes / monsters / messages / npcs)
 
     Note over Session: Partida Ativa em Memória
     Jogador->>API: "Ataco com a espada! Tirei 16 no d20"

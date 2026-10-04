@@ -14,7 +14,7 @@ De acordo com o Roadmap e os alinhamentos de arquitetura:
 | Unir as branches em `feat/integration-september`. | Implementar Onboarding interativo com botões no Telegram. |
 | Consolidar schemas enxutos em `api/schemas/rpg.py` (`GameState` sem `TurnRecord`). | Motor de Guardrails da Nvidia (NeMo) para validação pedagógica. |
 | Bot do Telegram respondendo via LangGraph (`turn_graph`) com d20 físico e dicas táticas. | Rastreamento e telemetria profunda de combate via **Langfuse**. |
-| Persistência relacional explícita (`sessao_jogo`, `heroi_sessao`, `monstro_sessao`). | Tratamento avançado de concorrência e testes de carga. |
+| Persistência relacional explícita (`sessions`, `heroes`, `monsters`, `messages`, `npcs`). | Tratamento avançado de concorrência e testes de carga. |
 | **Critério de Entrega:** Merge aprovado na `main` com bot jogável. | **Critério de Entrega:** Pipeline completo com Guardrails e Langfuse. |
 
 ---
@@ -69,7 +69,7 @@ class MonsterState(BaseModel):
 
 class NPCState(BaseModel):
     name: str = "Loomis"
-    role: str = "Treinador de Hesiod"
+    system_prompt: str = ""
 
 class GameState(BaseModel):
     session_id: str
@@ -87,13 +87,13 @@ class GameState(BaseModel):
 * Reexportar tudo no `api/schemas/__init__.py`.
 
 ### Passo 2.1: Modelagem Relacional Literal das Tabelas (`db/models.py`)
-Mapear os estados do Pydantic campo a campo em tabelas relacionais explícitas, eliminando `usuario`, `estado_sessao` e colunas JSONB opacas:
-1. **`sessao_jogo`:** `id_sessao (UUID, PK)`, `chat_id (BigInteger, UK)`, `status`, `localizacao`, `criado_em`.
-2. **`heroi_sessao`:** `id_heroi (UUID, PK)`, `id_sessao (UUID, FK)`, `player_id`, `nome`, `classe_nome`, `hp`, `max_hp`, `ac`, `attack_bonus`, `attack_name`, `special_power`, `ordem_iniciativa`.
-3. **`monstro_sessao`:** `id_monstro (UUID, PK)`, `id_sessao (UUID, FK)`, `nome`, `cage_number`, `hp`, `max_hp`, `ac`, `attack_bonus`, `attack_name`, `abilities`, `is_defeated`.
-4. **`historico_mensagens`:** `id_mensagem (UUID, PK)`, `id_sessao (UUID, FK)`, `remetente`, `conteudo`, `criado_em`.
-5. **`npc`:** `id_npc (UUID, PK)`, `nome`, `role`, `system_prompt`.
-6. **Atualização do `session_service.py`:** Buscar e atualizar heróis e monstros diretamente por `filter_by(id_sessao=session_id)`.
+Mapear os estados do Pydantic campo a campo em tabelas relacionais explícitas (1:1), eliminando `usuario`, `estado_sessao` e colunas JSONB opacas:
+1. **`sessions`:** `session_id (UUID, PK)`, `chat_id (BigInteger, UK)`, `location`, `is_victory`, `created_at`.
+2. **`heroes`:** `id (UUID, PK)`, `session_id (UUID, FK)`, `player_id`, `name`, `class_name`, `hp`, `max_hp`, `ac`, `attack_bonus`, `attack_name`, `special_power`.
+3. **`monsters`:** `id (UUID, PK)`, `session_id (UUID, FK)`, `name`, `cage_number`, `hp`, `max_hp`, `ac`, `attack_bonus`, `attack_name`, `abilities`, `is_defeated`.
+4. **`messages`:** `id (UUID, PK)`, `session_id (UUID, FK)`, `sender`, `role`, `content`, `timestamp`.
+5. **`npcs`:** `id (UUID, PK)`, `name`, `system_prompt`.
+6. **Atualização do `session_service.py`:** Buscar e atualizar heróis e monstros diretamente por `filter_by(session_id=session_id)`.
 
 ### Passo 3: Conexão do LangGraph (`api/ai_core/turn_graph.py`)
 * Atualizar o grafo para operar sobre `StateGraph(GameState)`.
@@ -127,7 +127,7 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
     # 3. Executa o LangGraph
     final_state = await turn_graph.ainvoke(state)
     
-    # 4. Salva no banco (atualiza monstro_sessao.hp e heroi_sessao.hp via SQLAlchemy db.commit)
+    # 4. Salva no banco (atualiza monsters.hp e heroes.hp via SQLAlchemy db.commit)
     persist_session_state_to_db(final_state)
     
     # 5. Retorna a fala do Loomis para o Telegram

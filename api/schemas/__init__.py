@@ -2,14 +2,11 @@ from api.schemas.rpg import (
     HeroArchetype,
     HeroState,
     MonsterState,
-    ActionType,
+    NPCState,
     ActionResult,
     Message,
-    RPGGraphState,
-)
-from api.schemas.state import (
-    NPCState,
     GameState,
+    RPGGraphState,
 )
 
 __all__ = [
@@ -17,9 +14,8 @@ __all__ = [
     "HeroState",
     "MonsterState",
     "NPCState",
-    "ActionType",
     "ActionResult",
     "Message",
-    "RPGGraphState",
     "GameState",
+    "RPGGraphState",
 ]
