@@ -3,17 +3,22 @@ import logging
 from typing import Any
 
 from api.schemas.rpg import (
-    HeroArchetype,
     HeroState,
     MonsterState,
-    ActionResult,
 )
 
 logger = logging.getLogger(__name__)
 
+
+class AttackResult(dict):
+    """Resultado determinístico de combate (dicionário com acesso a atributos)."""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
 # Catálogo oficial dos 5 Heróis de Hesiod
 HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
-    HeroArchetype.JORICK.value.lower(): {
+    "jorick": {
         "name": "Jorick",
         "class_name": "Guerreiro Humano",
         "ac": 13,
@@ -23,7 +28,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "attack_name": "Espada Larga",
         "special_power": "Investida (+2 no ataque ao começar longe do monstro)",
     },
-    HeroArchetype.RAEN.value.lower(): {
+    "raen": {
         "name": "Raen",
         "class_name": "Bárbara Anã",
         "ac": 9,
@@ -33,7 +38,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "attack_name": "Machado Pesado",
         "special_power": "Guerreira Feroz (Empurra o monstro 2 casas ao ser atingida)",
     },
-    HeroArchetype.BET.value.lower(): {
+    "bet": {
         "name": "Bet",
         "class_name": "Maga Elfa",
         "ac": 7,
@@ -43,7 +48,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "attack_name": "Bola de Fogo",
         "special_power": "Onda Explosiva (Dano em área atingindo criaturas adjacentes)",
     },
-    HeroArchetype.EVINDOL.value.lower(): {
+    "evindol": {
         "name": "Evindol",
         "class_name": "Ladino Humano",
         "ac": 11,
@@ -53,7 +58,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "attack_name": "Lâminas Giratórias",
         "special_power": "Ataque Furtivo (Causa dano dobrado - 2 - se flanquear)",
     },
-    HeroArchetype.YARROW.value.lower(): {
+    "yarrow": {
         "name": "Yarrow",
         "class_name": "Xamã Meio-Orc",
         "ac": 10,
@@ -140,7 +145,7 @@ def create_hero(archetype_or_name: str, player_id: str = "player_1") -> HeroStat
                 data = arch_data
                 break
     if not data:
-        data = HERO_ARCHETYPES[HeroArchetype.JORICK.value.lower()]
+        data = HERO_ARCHETYPES["jorick"]
 
     return HeroState(
         player_id=player_id,
@@ -177,12 +182,13 @@ def resolve_hero_attack(
     hero: HeroState,
     monster: MonsterState,
     active_monsters_count: int = 1,
+    heroes_team: list[HeroState] | None = None,
     is_far: bool = False,
     is_flanking: bool = False,
     adjacent_monsters: list[MonsterState] | None = None,
     forced_d20: int | None = None,
     forced_damage: int | None = None,
-) -> ActionResult:
+) -> AttackResult:
     """Executa a resolução determinística do ataque de um herói contra um monstro."""
     d20 = forced_d20 if forced_d20 is not None else roll_dice(20)
     bonus = hero.attack_bonus
@@ -214,15 +220,11 @@ def resolve_hero_attack(
         # Poder Especial: Bet (Onda Explosiva)
         if hero.name == "Bet" and adjacent_monsters:
             for adj in adjacent_monsters:
-                if not adj.is_defeated and adj.hp > 0:
-                    adj.hp = max(0, adj.hp - 1)
-                    if adj.hp == 0:
-                        adj.is_defeated = True
+                if not adj.is_defeated:
+                    adj.take_damage(1)
             special_effects.append("Onda Explosiva (Monstros adjacentes sofreram 1 ponto de dano)")
 
-        monster.hp = max(0, monster.hp - damage)
-        if monster.hp == 0:
-            monster.is_defeated = True
+        monster.take_damage(damage)
     else:
         # Poder Especial: Yarrow (Grilhões Espectrais ao errar o ataque)
         if hero.name == "Yarrow":
@@ -232,16 +234,18 @@ def resolve_hero_attack(
     loomis_cage_unlocked: int | None = None
     is_victory = False
 
-    # Gatilho 1: Monstro em 50% de HP ou menos (se for a única criatura na clareira)
+    # Gatilho 1: Monstro em 50% de HP ou menos
+    # Regra canônica: Loomis abre a próxima jaula SE só houver 1 monstro na arena E nenhum herói caído
+    has_fallen_hero = any(h.is_unconscious for h in (heroes_team or [hero]))
     if (
-        monster.hp > 0
-        and monster.hp <= (monster.max_hp / 2.0)
+        monster.is_half_hp_or_less
         and active_monsters_count == 1
         and monster.cage_number < 4
+        and not has_fallen_hero
     ):
         loomis_cage_unlocked = monster.cage_number + 1
         special_effects.append(
-            f"Gatilho Loomis (Monstro com 50% ou menos de HP! Loomis destranca a Jaula {loomis_cage_unlocked})"
+            f"Gatilho Loomis (Monstro em 50% de HP e nenhum herói caído! Loomis destranca a Jaula {loomis_cage_unlocked})"
         )
 
     # Gatilho 3: Todas as jaulas superadas (monstro da jaula 4 derrotado)
@@ -259,10 +263,9 @@ def resolve_hero_attack(
     if special_effects:
         narrative_parts.append("Efeitos: " + " | ".join(special_effects))
 
-    return ActionResult(
+    return AttackResult(
         attacker_name=hero.name,
         defender_name=monster.name,
-        action_type="atacar",
         d20_roll=d20,
         attack_bonus=bonus,
         total_attack=total_attack,
@@ -273,7 +276,7 @@ def resolve_hero_attack(
         defender_hp_before=hp_before,
         defender_hp_after=monster.hp,
         defender_defeated=monster.is_defeated,
-        special_effect_applied=" | ".join(special_effects) if special_effects else None,
+        special_effect_applied=" | ".join(special_effects) if special_effects else "",
         loomis_cage_unlocked=loomis_cage_unlocked,
         loomis_potion_used=False,
         is_victory=is_victory,
@@ -286,7 +289,7 @@ def resolve_monster_attack(
     hero: HeroState,
     forced_d20: int | None = None,
     forced_damage: int | None = None,
-) -> ActionResult:
+) -> AttackResult:
     """Executa a resolução determinística do ataque do monstro contra um herói."""
     special_effects: list[str] = []
 
@@ -297,7 +300,6 @@ def resolve_monster_attack(
     is_hit = is_critical or (total_attack >= hero.ac)
     hp_before = hero.hp
     damage = 0
-    loomis_potion_used = False
 
     if is_hit:
         if is_critical:
@@ -311,14 +313,10 @@ def resolve_monster_attack(
         if hero.name == "Raen":
             special_effects.append("Guerreira Feroz (Raen foi atingida e empurrou o monstro para trás!)")
 
-        hero.hp = max(0, hero.hp - damage)
-
-        # Gatilho 2 do Loomis: Herói com 0 HP
-        if hero.hp == 0:
-            hero.hp = hero.max_hp
-            loomis_potion_used = True
+        damage = hero.take_damage(damage)
+        if hero.is_unconscious:
             special_effects.append(
-                f"Gatilho Loomis (Herói caiu a 0 HP! Loomis arremessou a Poção de Menta e Limão e restaurou HP para {hero.max_hp}!)"
+                f"{hero.name} caiu inconsciente! Loomis aguarda a derrota da criatura para socorrê-lo."
             )
 
     narrative_parts = [
@@ -331,10 +329,9 @@ def resolve_monster_attack(
     if special_effects:
         narrative_parts.append("Efeitos: " + " | ".join(special_effects))
 
-    return ActionResult(
+    return AttackResult(
         attacker_name=monster.name,
         defender_name=hero.name,
-        action_type="atacar",
         d20_roll=d20,
         attack_bonus=bonus,
         total_attack=total_attack,
@@ -345,9 +342,10 @@ def resolve_monster_attack(
         defender_hp_before=hp_before,
         defender_hp_after=hero.hp,
         defender_defeated=False,
-        special_effect_applied=" | ".join(special_effects) if special_effects else None,
+        special_effect_applied=" | ".join(special_effects) if special_effects else "",
         loomis_cage_unlocked=None,
-        loomis_potion_used=loomis_potion_used,
+        loomis_potion_used=False,
+        hero_unconscious=hero.is_unconscious,
         is_victory=False,
         narrative_summary=" ".join(narrative_parts),
     )
