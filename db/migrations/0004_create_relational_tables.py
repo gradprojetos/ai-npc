@@ -121,9 +121,34 @@ def upgrade() -> None:
             server_default=sa.text("gen_random_uuid()"),
             nullable=False,
         ),
-        sa.Column("name", sa.String(length=255), nullable=False),
+        sa.Column("name", sa.String(length=255), unique=True, nullable=False),
         sa.Column("system_prompt", sa.Text(), server_default="", nullable=False),
         sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_npcs_name", "npcs", ["name"], unique=True)
+
+    # Seed inicial: Loomis
+    loomis_prompt = (
+        "Você é Loomis, o lendário e dedicado treinador da vila de Hesiod.\n"
+        "Você tem traços de sangue de ogro, é forte e intimidador, mas tem uma voz estranhamente aguda e anasalada.\n"
+        "Sua personalidade: pragmático, enérgico, exigente, mas muito protetor e encorajador com seus recrutas.\n"
+        "Você nunca deixa nenhum aluno morrer na arena de treino.\n"
+        "Fale sempre em primeira pessoa, de forma concisa e direta, reagindo às ações do herói ou dando conselhos táticos breves sobre os monstros nas jaulas.\n"
+        "Nunca quebre o personagem."
+    )
+    npcs_table = sa.table(
+        "npcs",
+        sa.column("name", sa.String),
+        sa.column("system_prompt", sa.Text),
+    )
+    op.bulk_insert(
+        npcs_table,
+        [
+            {
+                "name": "Loomis",
+                "system_prompt": loomis_prompt,
+            }
+        ],
     )
 
 

@@ -12,8 +12,6 @@ from api.schemas.rpg import (
 from api.motor_rpg.motor_rpg import (
     create_hero,
     get_cage_monster,
-    resolve_hero_attack,
-    resolve_monster_attack,
 )
 from db.models import Session, Hero, Monster, Message as MessageDB, NPC
 from db.session import SessionLocal
@@ -42,17 +40,28 @@ def clear_memory_session(session_id: str) -> None:
 def create_initial_rpg_state(
     session_id: str,
     initial_hero: HeroState | None = None,
+    npc_prompt: str | None = None,
 ) -> GameState:
     """Cria um novo estado do jogo com a Jaula 1 ativa e Loomis como treinador."""
     cage_1_monster = get_cage_monster(1)
     players = [initial_hero] if initial_hero else []
+
+    system_prompt = npc_prompt or ""
+    if not system_prompt:
+        try:
+            with SessionLocal() as db:
+                db_npc = db.query(NPC).filter_by(name="Loomis").first()
+                if db_npc:
+                    system_prompt = db_npc.system_prompt
+        except Exception:
+            pass
 
     state = GameState(
         session_id=session_id,
         location="Clareira de Treino em Hesiod",
         players=players,
         monsters=[cage_1_monster],
-        npcs=[NPCState(name="Loomis", system_prompt="")],
+        npcs=[NPCState(name="Loomis", system_prompt=system_prompt)],
         last_context=None,
         recent_messages=[],
         is_victory=False,
@@ -80,204 +89,7 @@ def add_or_update_player(
     return hero
 
 
-def advance_turn(state: GameState) -> str:
-    """Rotaciona a fila de iniciativa dos heróis (players[0] é sempre a vez)."""
-    next_hero = state.rotate_players()
-    return next_hero.player_id if next_hero else "monster"
 
-
-def execute_hero_turn(
-    state: GameState,
-    player_id: str | None = None,
-    action_type: str = "atacar",
-    is_far: bool = False,
-    is_flanking: bool = False,
-    forced_d20: int | None = None,
-    forced_damage: int | None = None,
-) -> dict:
-    """Executa a ação do herói contra o monstro ativo e atualiza o estado."""
-    if not state.players:
-        raise ValueError("Não há heróis cadastrados na sessão.")
-
-    # Se player_id for especificado, localiza o herói; caso contrário, usa players[0]
-    hero = None
-    if player_id:
-        hero = next((p for p in state.players if p.player_id == player_id), None)
-    if not hero:
-        hero = state.players[0]
-
-    if not state.monsters:
-        raise ValueError("Não há monstros ativos na arena.")
-
-    active_monster = state.monsters[0]
-
-    # Monstros secundários para habilidades em área (ex.: Bet)
-    adjacent = [m for m in state.monsters[1:] if not m.is_defeated]
-
-    result = resolve_hero_attack(
-        hero=hero,
-        monster=active_monster,
-        active_monsters_count=len([m for m in state.monsters if not m.is_defeated]),
-        heroes_team=state.players,
-        is_far=is_far,
-        is_flanking=is_flanking,
-        adjacent_monsters=adjacent,
-        forced_d20=forced_d20,
-        forced_damage=forced_damage,
-    )
-
-    # Registra a ação do herói no buffer de mensagens recentes
-    state.recent_messages.append(
-        Message(
-            sender="Jogador",
-            role="user",
-            content=f"{hero.name} atacou. {result.get('narrative_summary', '')}",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-    )
-
-    # Gatilho de destrancar jaula em 50% de HP durante a luta (se não houver herói caído)
-    if result.get("loomis_cage_unlocked"):
-        new_cage = result["loomis_cage_unlocked"]
-        new_monster = get_cage_monster(new_cage)
-        state.monsters.append(new_monster)
-        state.recent_messages.append(
-            Message(
-                sender="Loomis",
-                role="assistant",
-                content=(
-                    f"A fera sangra a menos de metade de sua vitalidade! "
-                    f"Loomis destranca a Jaula {new_cage} e {new_monster.name} ruge ao entrar na arena!"
-                ),
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        )
-
-    # Resolução de derrota de monstro e transição entre combates
-    if active_monster.is_defeated:
-        undefeated = [m for m in state.monsters if not m.is_defeated]
-        if undefeated:
-            # Se ainda houver outro monstro na arena (jaula aberta no meio do combate), avança para ele
-            state.monsters.remove(undefeated[0])
-            state.monsters.insert(0, undefeated[0])
-        else:
-            # TODOS os monstros ativos foram derrotados: fim do combate atual!
-            # Regra Canônica: Loomis administra poção para heróis com <= 2 HP
-            loomis = next((n for n in state.npcs if n.name == "Loomis"), None) or NPCState(name="Loomis", system_prompt="")
-            healed_heroes: list[str] = []
-            for h in state.players:
-                if h.hp <= 2:
-                    loomis.heal(h)
-                    healed_heroes.append(h.name)
-
-            if healed_heroes:
-                state.recent_messages.append(
-                    Message(
-                        sender="Loomis",
-                        role="assistant",
-                        content=(
-                            f"Loomis retira um frasco cintilante de líquido límpido da bolsa: "
-                            f"“É melhor beberem tudo antes da próxima luta!” "
-                            f"O líquido tem sabor refrescante de menta e limão. "
-                            f"{', '.join(healed_heroes)} recuperaram todos os pontos de vida!"
-                        ),
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                    )
-                )
-
-            if active_monster.cage_number >= 4:
-                state.is_victory = True
-                result["is_victory"] = True
-                state.recent_messages.append(
-                    Message(
-                        sender="Loomis",
-                        role="assistant",
-                        content="“Incrível! Vocês superaram todas as 4 jaulas e conquistaram a insígnia de Heróis de Hesiod!”",
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                    )
-                )
-            else:
-                next_cage = active_monster.cage_number + 1
-                next_monster = get_cage_monster(next_cage)
-                state.monsters = [next_monster]
-                state.recent_messages.append(
-                    Message(
-                        sender="Loomis",
-                        role="assistant",
-                        content=(
-                            f"“Estão melhores agora? Ótimo! É hora do próximo desafio!” "
-                            f"Loomis puxa a trava da Jaula {next_cage}. A porta se abre num estrondo e {next_monster.name} avança!"
-                        ),
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                    )
-                )
-
-    if result.get("is_victory"):
-        state.is_victory = True
-
-    # Rotaciona a fila de heróis
-    advance_turn(state)
-    set_memory_session(state.session_id, state)
-    return result
-
-
-def execute_monster_turn(
-    state: GameState,
-    target_player_id: str | None = None,
-    forced_d20: int | None = None,
-    forced_damage: int | None = None,
-) -> dict:
-    """Executa a ação do monstro ativo contra um dos heróis conforme as regras de Hesiod."""
-    if not state.players:
-        raise ValueError("Não há heróis na sessão para o monstro atacar.")
-    if not state.monsters:
-        raise ValueError("Não há monstros ativos para atacar.")
-
-    active_monster = state.monsters[0]
-
-    # Heróis conscientes (HP > 0)
-    conscious_heroes = [p for p in state.players if not p.is_unconscious]
-    if not conscious_heroes:
-        # Todos caíram inconscientes
-        target_hero = state.players[0]
-    elif target_player_id:
-        target_hero = next((p for p in state.players if p.player_id == target_player_id), conscious_heroes[0])
-    else:
-        # Regra Canônica de Hesiod:
-        # 1. Monstros gostam de desafios e atacam o herói com MAIOR HP atual.
-        # 2. Quase nunca atacam o mesmo herói duas vezes seguidas se houver outra opção.
-        last_attacked_name: str | None = None
-        for msg in reversed(state.recent_messages):
-            if msg.sender == "Monstro" and "atacou " in msg.content:
-                parts = msg.content.split("atacou ")
-                if len(parts) > 1:
-                    last_attacked_name = parts[1].split(".")[0].strip()
-                    break
-
-        candidates = [h for h in conscious_heroes if h.name != last_attacked_name]
-        if not candidates:
-            candidates = conscious_heroes
-
-        target_hero = max(candidates, key=lambda p: p.hp)
-
-    result = resolve_monster_attack(
-        monster=active_monster,
-        hero=target_hero,
-        forced_d20=forced_d20,
-        forced_damage=forced_damage,
-    )
-
-    state.recent_messages.append(
-        Message(
-            sender="Monstro",
-            role="assistant",
-            content=f"{active_monster.name} atacou {target_hero.name}. {result.get('narrative_summary', '')}",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-    )
-
-    set_memory_session(state.session_id, state)
-    return result
 
 
 def get_or_create_session_state(

@@ -155,7 +155,7 @@ class NPC(Base):
         default=uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
 

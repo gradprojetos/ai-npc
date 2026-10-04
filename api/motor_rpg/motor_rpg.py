@@ -181,92 +181,33 @@ def get_cage_monster(cage_number: int) -> MonsterState:
 def resolve_hero_attack(
     hero: HeroState,
     monster: MonsterState,
-    active_monsters_count: int = 1,
-    heroes_team: list[HeroState] | None = None,
-    is_far: bool = False,
-    is_flanking: bool = False,
-    adjacent_monsters: list[MonsterState] | None = None,
-    forced_d20: int | None = None,
+    d20: int | None = None,
     forced_damage: int | None = None,
 ) -> AttackResult:
-    """Executa a resolução determinística do ataque de um herói contra um monstro."""
-    d20 = forced_d20 if forced_d20 is not None else roll_dice(20)
+    """Executa a resolução simples e determinística do ataque do herói."""
+    d20_roll = d20 if d20 is not None else roll_dice(20)
     bonus = hero.attack_bonus
-    special_effects: list[str] = []
-
-    # Poder Especial: Jorick (Investida)
-    if hero.name == "Jorick" and is_far:
-        bonus += 2
-        special_effects.append("Investida (+2 no ataque por começar distante)")
-
-    total_attack = d20 + bonus
-    is_critical = d20 == 20
+    total_attack = d20_roll + bonus
+    is_critical = (d20_roll == 20)
     is_hit = is_critical or (total_attack >= monster.ac)
     hp_before = monster.hp
     damage = 0
 
     if is_hit:
-        if is_critical:
-            crit_roll = forced_damage if forced_damage is not None else roll_dice(6)
-            damage = crit_roll
-            special_effects.append(f"Acerto Crítico (20 natural! Dano 1d6: {crit_roll})")
-        else:
-            damage = 1
-            # Poder Especial: Evindol (Ataque Furtivo)
-            if hero.name == "Evindol" and is_flanking:
-                damage = 2
-                special_effects.append("Ataque Furtivo (Dano dobrado por flanqueamento: 2)")
-
-        # Poder Especial: Bet (Onda Explosiva)
-        if hero.name == "Bet" and adjacent_monsters:
-            for adj in adjacent_monsters:
-                if not adj.is_defeated:
-                    adj.take_damage(1)
-            special_effects.append("Onda Explosiva (Monstros adjacentes sofreram 1 ponto de dano)")
-
+        damage = (forced_damage if forced_damage is not None else roll_dice(6)) if is_critical else 1
         monster.take_damage(damage)
-    else:
-        # Poder Especial: Yarrow (Grilhões Espectrais ao errar o ataque)
-        if hero.name == "Yarrow":
-            special_effects.append("Grilhões Espectrais (Ataque errou, mas espíritos prenderam o monstro ao solo!)")
 
-    # Gatilhos do Loomis
-    loomis_cage_unlocked: int | None = None
-    is_victory = False
-
-    # Gatilho 1: Monstro em 50% de HP ou menos
-    # Regra canônica: Loomis abre a próxima jaula SE só houver 1 monstro na arena E nenhum herói caído
-    has_fallen_hero = any(h.is_unconscious for h in (heroes_team or [hero]))
-    if (
-        monster.is_half_hp_or_less
-        and active_monsters_count == 1
-        and monster.cage_number < 4
-        and not has_fallen_hero
-    ):
-        loomis_cage_unlocked = monster.cage_number + 1
-        special_effects.append(
-            f"Gatilho Loomis (Monstro em 50% de HP e nenhum herói caído! Loomis destranca a Jaula {loomis_cage_unlocked})"
-        )
-
-    # Gatilho 3: Todas as jaulas superadas (monstro da jaula 4 derrotado)
-    if monster.cage_number == 4 and monster.is_defeated:
-        is_victory = True
-        special_effects.append("Gatilho Loomis (Todas as 4 jaulas superadas! Insígnia Herói de Hesiod conquistada!)")
-
-    narrative_parts = [
-        f"{hero.name} atacou {monster.name} com {hero.attack_name}.",
-        f"Rolagem: d20={d20} + bônus={bonus} = {total_attack} (vs CA {monster.ac}).",
-        f"Resultado: {'ACERTOU!' if is_hit else 'ERROU!'}",
-    ]
-    if is_hit:
-        narrative_parts.append(f"Dano causado: {damage}. HP do alvo: {hp_before} -> {monster.hp}.")
-    if special_effects:
-        narrative_parts.append("Efeitos: " + " | ".join(special_effects))
+    narrative = (
+        f"{hero.name} atacou {monster.name} com {hero.attack_name} "
+        f"(d20={d20_roll} + bônus={bonus} = {total_attack} vs CA {monster.ac}). "
+        f"{'ACERTOU!' if is_hit else 'ERROU!'} "
+        + (f"Dano: {damage} (HP: {hp_before} -> {monster.hp})." if is_hit else "")
+    )
 
     return AttackResult(
         attacker_name=hero.name,
         defender_name=monster.name,
-        d20_roll=d20,
+        d20_roll=d20_roll,
         attack_bonus=bonus,
         total_attack=total_attack,
         target_ac=monster.ac,
@@ -276,63 +217,40 @@ def resolve_hero_attack(
         defender_hp_before=hp_before,
         defender_hp_after=monster.hp,
         defender_defeated=monster.is_defeated,
-        special_effect_applied=" | ".join(special_effects) if special_effects else "",
-        loomis_cage_unlocked=loomis_cage_unlocked,
-        loomis_potion_used=False,
-        is_victory=is_victory,
-        narrative_summary=" ".join(narrative_parts),
+        narrative_summary=narrative.strip(),
     )
 
 
 def resolve_monster_attack(
     monster: MonsterState,
     hero: HeroState,
-    forced_d20: int | None = None,
+    d20: int | None = None,
     forced_damage: int | None = None,
 ) -> AttackResult:
-    """Executa a resolução determinística do ataque do monstro contra um herói."""
-    special_effects: list[str] = []
-
-    d20 = forced_d20 if forced_d20 is not None else roll_dice(20)
+    """Executa a resolução simples e determinística do ataque do monstro."""
+    d20_roll = d20 if d20 is not None else roll_dice(20)
     bonus = monster.attack_bonus
-    total_attack = d20 + bonus
-    is_critical = d20 == 20
+    total_attack = d20_roll + bonus
+    is_critical = (d20_roll == 20)
     is_hit = is_critical or (total_attack >= hero.ac)
     hp_before = hero.hp
     damage = 0
 
     if is_hit:
-        if is_critical:
-            crit_roll = forced_damage if forced_damage is not None else roll_dice(6)
-            damage = crit_roll
-            special_effects.append(f"Acerto Crítico da criatura! (20 natural! Dano 1d6: {crit_roll})")
-        else:
-            damage = 1
+        damage = (forced_damage if forced_damage is not None else roll_dice(6)) if is_critical else 1
+        hero.take_damage(damage)
 
-        # Poder Especial: Raen (Guerreira Feroz - empurra o monstro ao ser atingida)
-        if hero.name == "Raen":
-            special_effects.append("Guerreira Feroz (Raen foi atingida e empurrou o monstro para trás!)")
-
-        damage = hero.take_damage(damage)
-        if hero.is_unconscious:
-            special_effects.append(
-                f"{hero.name} caiu inconsciente! Loomis aguarda a derrota da criatura para socorrê-lo."
-            )
-
-    narrative_parts = [
-        f"{monster.name} atacou {hero.name} com {monster.attack_name}.",
-        f"Rolagem: d20={d20} + bônus={bonus} = {total_attack} (vs CA {hero.ac}).",
-        f"Resultado: {'ACERTOU!' if is_hit else 'ERROU!'}",
-    ]
-    if is_hit:
-        narrative_parts.append(f"Dano sofrido: {damage}. HP do herói: {hp_before} -> {hero.hp}.")
-    if special_effects:
-        narrative_parts.append("Efeitos: " + " | ".join(special_effects))
+    narrative = (
+        f"{monster.name} atacou {hero.name} com {monster.attack_name} "
+        f"(d20={d20_roll} + bônus={bonus} = {total_attack} vs CA {hero.ac}). "
+        f"{'ACERTOU!' if is_hit else 'ERROU!'} "
+        + (f"Dano: {damage} (HP: {hp_before} -> {hero.hp})." if is_hit else "")
+    )
 
     return AttackResult(
         attacker_name=monster.name,
         defender_name=hero.name,
-        d20_roll=d20,
+        d20_roll=d20_roll,
         attack_bonus=bonus,
         total_attack=total_attack,
         target_ac=hero.ac,
@@ -341,11 +259,7 @@ def resolve_monster_attack(
         damage_dealt=damage,
         defender_hp_before=hp_before,
         defender_hp_after=hero.hp,
-        defender_defeated=False,
-        special_effect_applied=" | ".join(special_effects) if special_effects else "",
-        loomis_cage_unlocked=None,
-        loomis_potion_used=False,
+        defender_defeated=hero.is_unconscious,
         hero_unconscious=hero.is_unconscious,
-        is_victory=False,
-        narrative_summary=" ".join(narrative_parts),
+        narrative_summary=narrative.strip(),
     )
