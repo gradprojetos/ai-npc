@@ -4,66 +4,66 @@ Este documento detalha a arquitetura de ponta a ponta, a modelagem de domínio o
 
 ---
 
-## 1. Visao Geral e Bounded Contexts (DDD)
+## 1. Visão Geral e Bounded Contexts (DDD)
 
-O sistema e estruturado em tres Bounded Contexts com responsabilidades estritamente delimitadas:
+O sistema é estruturado em quatro Bounded Contexts com responsabilidades estritamente delimitadas:
 
 ```mermaid
 flowchart LR
     subgraph BC_Telegram["Bounded Context: Ingress & Interface"]
-        TelegramBot["Servico do Telegram (telegram_bot/)"]
+        TelegramBot["Serviço do Telegram (telegram_bot/)"]
     end
 
     subgraph BC_MotorRPG["Bounded Context: Motor de Regras (api/motor_rpg/)"]
-        RulesEngine["Motor de Dados e Regras (d20 vs CA)"]
-        SessionMgr["Gerenciador de Partidas (Memoria & Persistencia)"]
+        RulesEngine["Motor de Regras & Cálculos (d20 + bônus vs CA)"]
+        SessionMgr["Gerenciador de Sessões (Memória & Persistência)"]
     end
 
-    subgraph BC_Cognitivo["Bounded Context: Cognicao e Dialogo (api/ai_core/)"]
+    subgraph BC_Cognitivo["Bounded Context: Cognição e Diálogo (api/ai_core/)"]
         TurnGraph["Grafo de Turno (LangGraph)"]
         LoomisNPC["Persona do Loomis (LLM Gateway)"]
     end
 
-    subgraph BC_Persistencia["Bounded Context: Persistencia (db/)"]
-        PostgreSQL[("PostgreSQL (estado_sessao / historico_mensagens)")]
+    subgraph BC_Observabilidade["Bounded Context: Telemetria & Tracing"]
+        Langfuse[("Langfuse (Prompts, Tokens & Rastreamento)")]
     end
 
-    TelegramBot -->|Mensagem / Comando| SessionMgr
-    SessionMgr -->|Valida Vez / Acao| RulesEngine
+    subgraph BC_Persistencia["Bounded Context: Persistência Relacional (db/)"]
+        PostgreSQL[("PostgreSQL (sessao_jogo / heroi_sessao / monstro_sessao / historico_mensagens)")]
+    end
+
+    TelegramBot -->|Mensagem / d20 Declarado| SessionMgr
     SessionMgr -->|Dispara Turno com GameState| TurnGraph
-    TurnGraph -->|Consulta Regras| RulesEngine
-    TurnGraph -->|Gera Fala em 1a Pessoa| LoomisNPC
+    TurnGraph -->|Consulta Validações e Cálculos| RulesEngine
+    TurnGraph -->|Injeta last_context e Persona| LoomisNPC
+    LoomisNPC -.->|Tracing e Métricas| Langfuse
     TurnGraph -->|Retorna GameState Atualizado| SessionMgr
-    SessionMgr -->|Persiste GameState Final| PostgreSQL
+    SessionMgr -->|Persiste GameState Consolidado| PostgreSQL
 ```
 
-### Definicao dos Contextos Delimitados:
-1. **Contexto de Interface (Telegram):** Recebe webhooks, decodifica remetentes (`chat_id`, `user_id`) e despacha mensagens formatadas ao grupo.
-2. **Contexto do Motor RPG (Dominio de Regras):** Arbitro deterministico das regras de Hesiod (dados, vida, armadura, ordem de turnos, onboarding e pocao de cura).
-3. **Contexto Cognitivo (Dominio de IA):** Modela a cognicao do NPC Loomis via LangGraph, classificando intencoes e gerando narrativa em 1a pessoa.
-4. **Contexto de Persistencia:** Armazenamento relacional e documental do `GameState` agregado no PostgreSQL.
+### Definição dos Contextos Delimitados:
+1. **Contexto de Interface (Telegram):** Recebe webhooks, decodifica remetentes (`chat_id`, `telegram_id`) e despacha mensagens formatadas ao grupo.
+2. **Contexto do Motor RPG (Domínio de Regras):** Árbitro determinístico das regras oficiais de Hesiod (validação de dados físicos, armaduras, vida, habilidades especiais dos monstros e poções de Loomis).
+3. **Contexto Cognitivo (Domínio de IA):** Modela a cognição e pedagogia do Treinador Loomis via LangGraph, fornecendo dicas posicionais e narrando em 1ª pessoa a partir do contexto mecânico efêmero.
+4. **Contexto de Observabilidade (Langfuse):** Rastreia execuções, metadados de jogadas (dados informados, acertos/erros, latências e custos de tokens) sem poluir as tabelas do banco de dados operacional.
+5. **Contexto de Persistência:** Armazenamento relacional e documental do `GameState` agregado no PostgreSQL.
 
 ---
 
-## 2. Modelagem de Dominio (Domain Model & SOLID)
+## 2. Modelagem de Domínio (Domain Model & SOLID)
 
-Seguindo DDD e o principio de responsabilidade unica (SRP), o modelo distingue o **Aggregate Root (`GameState`)**, suas **Entidades filhas** e os **Value Objects**:
+Seguindo DDD e o princípio da responsabilidade única (SRP), o modelo distingue o **Aggregate Root (`GameState`)** e suas **Entidades filhas ricas e auto-contidas**:
 
 ```mermaid
 classDiagram
     class GameState {
         +str session_id
         +str location
-        +str phase
-        +int current_turn_number
-        +str active_turn_actor
-        +int cage_number
         +list~HeroState~ players
-        +list~MonsterState~ monsters_queue
+        +list~MonsterState~ monsters
         +list~NPCState~ npcs
-        +list~TurnRecord~ turns_history
+        +str last_context
         +list~Message~ recent_messages
-        +bool is_active
         +bool is_victory
     }
 
@@ -75,7 +75,8 @@ classDiagram
         +int max_hp
         +int ac
         +int attack_bonus
-        +bool is_unconscious
+        +str attack_name
+        +str special_power
     }
 
     class MonsterState {
@@ -85,23 +86,14 @@ classDiagram
         +int max_hp
         +int ac
         +int attack_bonus
+        +str attack_name
+        +list~str~ abilities
         +bool is_defeated
     }
 
     class NPCState {
         +str name
         +str role
-    }
-
-    class TurnRecord {
-        +int turn_number
-        +str actor_name
-        +str action_type
-        +int d20_roll
-        +int damage
-        +str summary
-        +str loomis_reaction
-        +bool loomis_potion_used
     }
 
     class Message {
@@ -111,124 +103,215 @@ classDiagram
         +str timestamp
     }
 
-    GameState "1" *-- "1..4" HeroState : contem jogadores
-    GameState "1" *-- "1..4" MonsterState : fila de jaulas
-    GameState "1" *-- "1..*" NPCState : contem instrutor
-    GameState "1" *-- "0..*" TurnRecord : historico estruturado
-    GameState "1" *-- "0..3" Message : buffer recente de contexto
+    GameState "1" *-- "1..4" HeroState : fila de iniciativa (players[0] é a vez)
+    GameState "1" *-- "1..4" MonsterState : monstros da arena (monsters[0] é o alvo)
+    GameState "1" *-- "1..*" NPCState : instrutor da vila
+    GameState "1" *-- "0..3" Message : buffer recente de contexto conversacional
 ```
 
-### Responsabilidades dos Elementos de Dominio:
-* **`GameState` (Aggregate Root):** O estado consolidado da partida. Controla o ciclo macro (`phase`: `"onboarding"`, `"combat"`, `"victory"`). Representa exatamente o que a tabela `estado_sessao.variaveis_jogo` armazena no banco de dados.
-* **`HeroState` e `MonsterState` (Entidades):** Possuem ciclo de vida e estado mutavel durante o combate (HP, status de derrota/inconsciencia).
-* **`TurnRecord` (Value Object Imutavel):** Registro estruturado da jogada realizada (quem agiu, quanto tirou no dado, quanto dano causou, se Loomis arremessou pocao e a reacao narrativa). Fica armazenado na lista `turns_history` do `GameState`.
-* **`recent_messages` (Buffer Deslizante):** Mantem estritamente as ultimas 3 mensagens no `GameState` para fornecer contexto conversacional imediato ao LangGraph, sem inflar a memoria RAM nem desperdicar tokens. O historico completo e persistido na tabela `historico_mensagens` do PostgreSQL.
+### Responsabilidades dos Elementos de Domínio:
+* **`GameState` (Aggregate Root):** O estado consolidado do tabuleiro. Não possui campos redundantes (`current_turn`, `active_player_id`):
+  * **Fila de Iniciativa:** A própria lista `players` atua como fila circular. O herói ativo é sempre `players[0]`. Ao finalizar a jogada de ataque, a fila rotaciona (`players.append(players.pop(0))`).
+  * **Monstro Ativo:** É sempre `monsters[0]`.
+  * **`last_context`:** Campo transitório que armazena a string com o resumo mecânico da jogada apenas para alimentar o prompt do Loomis.
+  * **`recent_messages`:** Buffer deslizante das últimas 3 mensagens mantido para preservar a fluidez de diálogos continuados.
+* **`HeroState` e `MonsterState` (Entidades Ricas):** Carregam seus atributos mecânicos e regras especiais (`special_power`, `abilities`) de forma auto-contida, facilitando o acesso direto pela IA e pelas telas de onboarding.
+* **Sem `TurnRecord`:** Eliminou-se a classe `TurnRecord`. Os eventos e auditorias analíticas passam a ser rastreados de forma desacoplada no **Langfuse**.
+
+### 2.1. Modelo Físico de Banco de Dados (PostgreSQL Relacional Normalizado)
+
+Em alinhamento com a arquitetura explícita, o banco de dados reflete **literalmente e campo a campo** as entidades do domínio, eliminando colunas opacas de JSONB (`variaveis_jogo`):
+
+```mermaid
+erDiagram
+    SESSAO_JOGO ||--o{ HEROI_SESSAO : "possui (1:N)"
+    SESSAO_JOGO ||--o{ MONSTRO_SESSAO : "enfrenta (1:N)"
+    SESSAO_JOGO ||--o{ HISTORICO_MENSAGENS : "registra (1:N)"
+
+    SESSAO_JOGO {
+        UUID id_sessao PK
+        BigInteger chat_id UK "ID do grupo/chat do Telegram"
+        String status "'ativa', 'vitoria'"
+        String localizacao "'Clareira de Treino em Hesiod'"
+        DateTime criado_em
+    }
+
+    HEROI_SESSAO {
+        UUID id_heroi PK
+        UUID id_sessao FK "Pertence à sessão"
+        String player_id "Telegram ID do jogador"
+        String nome "Jorick, Raen, Bet..."
+        String classe_nome "Guerreiro, Bárbara..."
+        Integer hp "Pontos de vida atuais"
+        Integer max_hp "Vida máxima"
+        Integer ac "Classe de armadura"
+        Integer attack_bonus "Bônus de ataque (+4, +5...)"
+        String attack_name "Nome do ataque básico"
+        String special_power "Regra do poder tático"
+        Integer ordem_iniciativa "Posição na fila circular (0, 1, 2...)"
+    }
+
+    MONSTRO_SESSAO {
+        UUID id_monstro PK
+        UUID id_sessao FK "Pertence à sessão"
+        String nome "Bullette, Beholder..."
+        Integer cage_number "Número da jaula (1 a 4)"
+        Integer hp "Pontos de vida atuais"
+        Integer max_hp "Vida máxima"
+        Integer ac "Classe de armadura"
+        Integer attack_bonus "Bônus de ataque"
+        String attack_name "Ataque da criatura"
+        JSONB abilities "Lista de habilidades especiais do monstro"
+        Boolean is_defeated "Status de derrota"
+    }
+
+    HISTORICO_MENSAGENS {
+        UUID id_mensagem PK
+        UUID id_sessao FK "Pertence à sessão"
+        String remetente "'Jogador', 'Loomis', 'Sistema'"
+        Text conteudo "Texto da mensagem"
+        DateTime criado_em
+    }
+
+    NPC {
+        UUID id_npc PK
+        String nome "Loomis"
+        String role "Treinador de Hesiod"
+        Text system_prompt "Prompt base da persona do treinador"
+    }
+```
+
+#### Vantagens do Modelo Relacional Literal:
+1. **Espelhamento 100% Literal com os States do Pydantic:**
+   * `HeroState` $\leftrightarrow$ Tabela `heroi_sessao`
+   * `MonsterState` $\leftrightarrow$ Tabela `monstro_sessao`
+   * `GameState` $\leftrightarrow$ `SessaoJogo` + listas filhas consultadas por `id_sessao`.
+2. **Consultas Simples e Rápidas (Zero JOINs Mirabolantes):**
+   * Carregar sessão: `db.query(HeroiSessao).filter_by(id_sessao=session_id).order_by(HeroiSessao.ordem_iniciativa).all()`
+   * Carregar monstro ativo: `db.query(MonstroSessao).filter_by(id_sessao=session_id, is_defeated=False).first()`
+3. **Persistência Limpa via Dirty-Tracking do SQLAlchemy:**
+   * Para aplicar o dano do turno:
+     ```python
+     monstro.hp = novo_hp
+     if monstro.hp == 0:
+         monstro.is_defeated = True
+     db.commit() # O ORM executa o UPDATE pontual na coluna hp
+     ```
+4. **Fácil Extensibilidade para Novas Histórias/Campanhas:**
+   * Permite queries analíticas diretas em SQL para métricas e relatórios do professor.
+   * Adicionar novas campanhas, monstros ou regras no futuro é modular e não quebra uma estrutura monolítica.
 
 ---
 
-## 3. Dinamica de Ciclo de Vida: Memoria vs. Banco de Dados
+## 3. Dinâmica de Ciclo de Vida: Memória vs. Banco de Dados
 
-Para evitar sobrecarga de transacoes no banco a cada micro-interacao e garantir performance em tempo real no Telegram:
+Para evitar sobrecarga de transações no banco a cada micro-interação e garantir performance em tempo real no Telegram:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Jogador as Jogador (Telegram)
     participant API as FastAPI / TelegramService
-    participant Session as SessionManager (Memoria)
+    participant Session as SessionManager (Memória)
     participant Graph as TurnGraph (LangGraph)
-    participant LLM as LLMClient (Gemma / Loomis)
-    participant DB as PostgreSQL (estado_sessao)
+    participant Motor as MotorRPG (Regras)
+    participant LLM as LLMClient (Loomis)
+    participant LF as Langfuse (Observabilidade)
+    participant DB as PostgreSQL (sessao / heroi / monstro)
 
-    Note over Session: Partida em Andamento (Em Memoria)
-    Jogador->>API: Envia mensagem no grupo ("Eu ataco com a espada")
-    API->>Session: get_session(chat_id)
-    Session-->>API: GameState da partida ativa
+    Note over Session: Partida Ativa em Memória
+    Jogador->>API: "Ataco com a espada! Tirei 16 no d20"
+    API->>Session: get_session(session_id)
+    Session-->>API: GameState atual
     
     API->>Graph: turn_graph.ainvoke(GameState)
-    Graph->>Graph: Classificar intencao (combate)
-    Graph->>Graph: Resolver ataque heroi + contra-ataque monstro -> gera TurnRecord
-    Graph->>LLM: Gerar fala do Loomis narrando a rodada
-    LLM-->>Graph: Narrativa em 1a pessoa
-    Graph-->>API: GameState atualizado (HPs alterados + novo TurnRecord)
-
-    API->>Session: update_memory(chat_id, GameState)
-    API->>Jogador: Envia narrativa do Loomis no Telegram
-
-    alt Partida Encerrada ou Milestone (Vitoria / Troca de Jaula)
-        API->>DB: persist_session_state_to_db(GameState)
-        Note over DB: Grava snapshot final no estado_sessao
+    Graph->>Graph: Classificar intenção & extrair d20
+    
+    alt Ação de Combate com d20
+        Graph->>Motor: resolve_hero_attack(d20=16, hero, monster)
+        Motor-->>Graph: HP atualizado + resumo do combate
+        Graph->>Graph: Seta state.last_context
+        Graph->>Graph: Rotaciona fila: players.rotate()
+    else Pedido de Dica / Conversa
+        Graph->>Graph: Prepara dica posicional (sem rotacionar fila)
     end
-```
 
-### Politica de Persistencia:
-1. **Em Andamento (Hot Path):** O `GameState` e mantido e operado em cache de memoria (`_MEMORY_SESSIONS`) pelo `session_service` durante as trocas rapidas de mensagens.
-2. **Ao Concluir a Partida / Fim de Sessao (Cold Path):** O `GameState` agregado (contendo os status finais dos herois, monstros derrotados e a lista de `turns_history`) e persistido de forma atomica no PostgreSQL dentro de `estado_sessao.variaveis_jogo`.
-3. **Persistencia de Seguranca:** Apos cada rodada fechada (quando todos os herois e o monstro agiram), uma gravacao assincrona no banco garante a recuperacao de desastres caso o container reinicie.
+    Graph->>LLM: Gera fala de Loomis (injetando last_context)
+    LLM-->>Graph: Resposta dramática em 1ª pessoa
+    LLM-.->LF: Registra trace (prompt, contexto, tokens)
+    
+    Graph-->>API: GameState atualizado
+    API->>Session: update_memory(session_id, GameState)
+    API->>Jogador: Envia mensagem do Loomis no Telegram
+
+    Note over API,DB: Persistência Relacional via ORM ao final do ciclo
+    API->>DB: Atualiza monstro.hp / heroi.hp (db.commit)
+```
 
 ---
 
-## 4. Dinamica de Jogo: Onboarding, Turno Encadeado e Regras de Hesiod
+## 4. Dinâmica de Jogo: Regras Oficiais de Hesiod
 
-O sistema opera orientado a eventos conforme as regras canônicas de *The Heroes of Hesiod*:
+O sistema opera orientado às regras canônicas de *The Heroes of Hesiod*:
 
-### 4.1. Fase de Onboarding e Escolha de Personagens (`phase = "onboarding"`)
-1. **Comando `/start`:** Loomis da as boas-vindas na clareira de Hesiod e apresenta os 5 herois disponiveis:
-   * **Jorick:** Guerreiro Humano (CA 13, HP 5, Espada Larga 1d20+4).
-   * **Raen:** Barbara Ana (CA 9, HP 7, Machado Pesado 1d20+5).
-   * **Bet:** Maga Elfa (CA 7, HP 4, Bola de Fogo 1d20+7).
-   * **Evindol:** Ladino Humano (CA 11, HP 3, Laminas 1d20+6).
-   * **Yarrow:** Xama Meio-Orc (CA 10, HP 6, Espiritos 1d20+3).
-2. **Selecao de Herois:** Os jogadores no grupo escolhem seus arqueticos (ate 4 jogadores).
-3. **Inicio do Combate:** Loomis entrega as armas respectivas, destranca a Jaula 1 (*Bullette Faminto*), transiciona `phase = "combat"` e passa a vez para o primeiro jogador.
+### 4.1. Onboarding e Escolha de Personagens
+1. **Comando `/start`:** Loomis dá as boas-vindas na clareira e apresenta os arquétipos:
+   * **Jorick (#3):** Guerreiro Humano (CA 13, HP 5, +4 ataque). *Investida:* +2 se começar longe.
+   * **Raen (#2):** Bárbara Anã (CA 9, HP 7, +5 ataque). *Guerreira Feroz:* Empurra 2 casas ao ser atingida.
+   * **Bet (#5):** Maga Elfa (CA 7, HP 4, +7 ataque à distância). *Onda Explosiva:* Dano em área em monstros adjacentes.
+   * **Evindol (#1):** Ladino Humano (CA 11, HP 3, +6 ataque). *Ataque Furtivo:* Dano dobrado ao flanquear.
+   * **Yarrow (#4):** Xamã Meio-Orc (CA 10, HP 6, +3 ataque). *Grilhões Espectrais:* Prende a criatura ao errar golpe.
+2. **Regra Básica do d20:** Os jogadores são instruídos a rolar seus próprios dados físicos e informar o valor. O PDF pode ser enviado como manual complementar.
 
-### 4.2. O Turno Encadeado de Combate (Acao do Heroi + Reacao do Monstro)
-O monstro nao e um participante com conta no Telegram; sua acao ocorre de forma **encadeada e automatica**:
-1. O heroi cujo turno esta ativo envia sua acao (ataque ou pergunta tatica).
-2. O motor calcula o golpe do heroi: `d20 + bonus >= CA_alvo`.
-3. Se o monstro for atingido, deduz-se o HP.
-4. **Contra-ataque Imediato da Criatura:** Se o monstro continuar vivo apos o golpe, o motor calcula na mesma hora o ataque do monstro contra um dos herois ativos.
-5. **Narracao Unificada do Loomis:** O LangGraph sintetiza em 1a pessoa toda a sequencia do turno:
-   * O golpe do heroi (acerto/erro e impacto).
-   * A investida violenta do monstro em resposta.
-   * A chamada para o proximo heroi da fila agir.
+### 4.2. Início do Combate: "Monsters First"
+* De acordo com as regras canônicas do livro, **o monstro sempre age primeiro**:
+  1. Ao abrir a jaula, o monstro desfere imediatamente sua primeira investida na clareira.
+  2. A primeira mensagem que o grupo recebe já narra o ataque da criatura (focando no herói de maior HP).
+  3. A vez é então passada para o primeiro herói da fila (`players[0]`), que já reage à ameaça em andamento.
 
-### 4.3. Regras Especiais de Hesiod
-* **A Pocao de Loomis (Zero Frustracao):**
-  * Quando o ataque de um monstro reduz o HP de um heroi a 0, o heroi cai inconsciente.
-  * Loomis interrompe a cena, grita para o aluno se levantar e arremessa sua famosa pocao com sabor de menta e limao, restaurando imediatamente a vida maxima do heroi.
-  * O heroi nao perde a vez e continua no combate.
-* **Gatilho de 50% de HP da Jaula:**
-  * Se houver apenas uma criatura na clareira e seu HP cair para 50% ou menos, Loomis pode destrancar a jaula seguinte para elevar o desafio do treino.
-* **Vitoria:**
-  * Apos as 4 jaulas serem superadas (Bullette, Beholder, Dragao Vermelho e Pixies), Loomis declara vitoria, concede a insignia de **Heroi de Hesiod** e encerra a partida.
+### 4.3. Resolução de Ações e Dicas Livres
+* **Dica Tática (Ação Livre):** O herói pode conversar e pedir conselhos a Loomis a qualquer momento. Isso não consome seu turno e não roda a fila de heróis.
+* **Ataque com d20 Físico:** O motor valida o valor informado pelo jogador:
+  * Se o d20 não for informado, Loomis cobra a rolagem em personagem e aguarda.
+  * Com o dado, calcula `d20 + bonus >= CA` e desconta o HP.
+  * A fila de heróis avança para o próximo recruta.
+* **Nova Rodada:** Quando todos os heróis agirem, o monstro inicia a rodada seguinte com um novo ataque.
+
+### 4.4. Regras Especiais de Hesiod
+* **Poção Mágica de Loomis (Zero Frustração):** Quando o HP de um herói atinge 0, ele cai inconsciente. Loomis interrompe a luta, arremessa a poção sabor menta e limão e restaura a vida máxima do herói imediatamente. Ninguém morre na clareira.
+* **Gatilho de 50% de HP:** Se a criatura cair para a metade da vida ou menos (e for a única na arena), Loomis destranca a jaula seguinte como surpresa tática.
+* **Vitória:** Ao derrotar o Enxame de Pixies da Jaula 4, Loomis concede as insígnias oficiais de **Herói de Hesiod**.
 
 ---
 
 ## 5. Ciclo Cognitivo no LangGraph (`turn_graph.py`)
 
-A execucao de cada requisicao no LangGraph segue a maquina de estados de turno:
+A execução de cada requisição no LangGraph segue a máquina de estados:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Entrada : Recebe GameState
-    Entrada --> ClassificarIntencao : Avalia ultima mensagem
+    [*] --> ClassificarIntencao : Recebe GameState + Mensagem do Jogador
     
     state checagem_intencao <<choice>>
     ClassificarIntencao --> checagem_intencao
     
-    checagem_intencao --> MotorCombate : intencao == 'atacar'
-    checagem_intencao --> DicaTatica : intencao == 'conversar'
+    checagem_intencao --> DicaTatica : Intenção == 'conversar' / 'pedir_dica'
+    checagem_intencao --> PedirDado : Intenção == 'atacar' mas d20 está ausente
+    checagem_intencao --> MotorCombate : Intenção == 'atacar' com d20 presente
     
-    MotorCombate --> LoomisNarrador : Rolagem heroi + reacao monstro resolvidas
-    DicaTatica --> LoomisNarrador : Dica sobre fraqueza da jaula pronta
+    PedirDado --> LoomisPrompt : Mensagem cobrando rolagem física
+    DicaTatica --> LoomisPrompt : Injeta conselho posicional (Ataque Furtivo, Investida, etc.)
     
-    LoomisNarrador --> ConsolidarTurno : Resposta do NPC gerada
-    ConsolidarTurno --> [*] : Retorna GameState com novo TurnRecord
+    MotorCombate --> AtualizarEstado : Calcula acerto, dano e gatilhos de Loomis
+    AtualizarEstado --> LoomisPrompt : Injeta resumo mecânico em state.last_context e roda fila de heróis
+    
+    LoomisPrompt --> GerarRespostaLLM : Envia prompt com persona e contexto ao LLMClient
+    GerarRespostaLLM --> ConcluirCiclo : Resposta gerada e trace enviada ao Langfuse
+    ConcluirCiclo --> [*] : Retorna GameState atualizado
 ```
 
-### Nos do Grafo:
-* **`classify_intent_node`:** Identifica o objetivo da acao (ataque físico/magico versus duvida/conselho).
-* **`combat_node`:** Executa o cálculo determinístico das regras (d20 + bônus versus CA do monstro, contra-ataque da criatura e checagem de poção de cura). Gera o `TurnRecord`.
-* **`tactical_advice_node`:** Consulta as fraquezas da criatura atual nas regras de Hesiod e monta a instrucao pedagogica.
-* **`npc_node` (Loomis):** Recebe o contexto do turno e sintetiza o dialogo em 1a pessoa com o `LLMClient`.
+### Responsabilidade dos Nós:
+* **`classify_intent_node`:** Identifica se a mensagem é diálogo/dica ou ataque, e extrai o valor numérico do d20 caso declarado.
+* **`tactical_advice_node`:** Lê o `hero.special_power` do herói ativo e `monster.abilities` do monstro atual e prepara o conselho tático (ação livre).
+* **`combat_node`:** Aplica o cálculo matemático das regras (d20 informado + bônus versus CA, crítico, gatilho de poção e destrancamento de jaula). Preenche `state.last_context` e rotaciona `state.players`.
+* **`npc_node` (Loomis):** Sintetiza a resposta em 1ª pessoa no tom encorajador e pragmático do treinador, utilizando o `last_context` e o histórico de mensagens recentes.
