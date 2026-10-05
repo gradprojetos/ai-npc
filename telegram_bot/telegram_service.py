@@ -92,7 +92,7 @@ class TelegramService:
 
     async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
-            await update.message.reply_text("Olá! Eu sou seu NPC. Fale comigo!")
+            await update.message.reply_text("Olá recruta! Eu sou Loomis, o treinador de Hesiod! Diga-me o que quer fazer ou ataque a fera na jaula!")
 
     async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /reset para apagar o histórico e recomeçar a conversa."""
@@ -100,10 +100,11 @@ class TelegramService:
             return
 
         telegram_id = update.effective_user.id
+        logger.info(f"Comando /reset recebido de user_id={telegram_id}")
         if self.on_reset_callback:
             try:
                 await self.on_reset_callback(telegram_id)
-                await update.message.reply_text("🧹 Histórico e memória apagados! Pode começar de novo.")
+                await update.message.reply_text("Histórico e memória apagados! Pode começar de novo.")
             except Exception as e:
                 logger.error(f"Erro ao processar /reset: {e}", exc_info=True)
                 await update.message.reply_text("Ocorreu um erro ao tentar reiniciar seu histórico.")
@@ -116,8 +117,13 @@ class TelegramService:
             return
 
         user_text = update.message.text
+        if context.bot.username:
+            user_text = user_text.replace(f"@{context.bot.username}", "").strip()
+
         user = update.effective_user
         chat = update.effective_chat
+        logger.info(f"Mensagem recebida [chat_id={chat.id if chat else None}, user={user.username if user else None}]: '{user_text}'")
+
         user_info = {
             "telegram_id": user.id if user else None,
             "username": user.username if user else None,
@@ -126,11 +132,15 @@ class TelegramService:
             "chat_id": chat.id if chat else None,
         }
 
-        await update.message.chat.send_action(action="typing")
+        try:
+            await update.message.chat.send_action(action="typing")
+        except Exception as e:
+            logger.debug(f"Não foi possível enviar typing action: {e}")
 
         try:
             # Chama o orquestrador passando a mensagem e os metadados do jogador
             reply_text = await self.on_message_callback(user_text, user_info)
+            logger.info(f"Resposta enviada para chat_id={chat.id if chat else None}: '{reply_text[:60]}...'")
         except Exception as e:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
