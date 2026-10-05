@@ -1,129 +1,173 @@
 from datetime import datetime
-from typing import Any
 from uuid import UUID, uuid4
 
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
 
 
-class Usuario(Base):
-    __tablename__ = "usuario"
+class Session(Base):
+    __tablename__ = "sessions"
 
-    id_usuario: Mapped[UUID] = mapped_column(
+    session_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    telegram_id: Mapped[int | None] = mapped_column(
+    chat_id: Mapped[int | None] = mapped_column(
         BigInteger,
         unique=True,
         index=True,
         nullable=True,
     )
-    nome: Mapped[str] = mapped_column(String(255), nullable=False)
-    # email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
-    data_criacao: Mapped[datetime] = mapped_column(
+    location: Mapped[str] = mapped_column(
+        String(255),
+        default="Clareira de Treino em Hesiod",
+        nullable=False,
+    )
+    is_victory: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
     )
+
+    heroes: Mapped[list["Hero"]] = relationship(
+        "Hero",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    monsters: Mapped[list["Monster"]] = relationship(
+        "Monster",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    messages: Mapped[list["Message"]] = relationship(
+        "Message",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+
+class Hero(Base):
+    __tablename__ = "heroes"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    player_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    class_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    hp: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_hp: Mapped[int] = mapped_column(Integer, nullable=False)
+    ac: Mapped[int] = mapped_column(Integer, nullable=False)
+    attack_bonus: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    attack_name: Mapped[str] = mapped_column(String(255), default="Ataque Básico", nullable=False)
+    special_power: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    session: Mapped["Session"] = relationship("Session", back_populates="heroes")
+
+
+class Monster(Base):
+    __tablename__ = "monsters"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    cage_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    hp: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_hp: Mapped[int] = mapped_column(Integer, nullable=False)
+    ac: Mapped[int] = mapped_column(Integer, nullable=False)
+    attack_bonus: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    attack_name: Mapped[str] = mapped_column(String(255), default="Ataque da Criatura", nullable=False)
+    abilities: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    is_defeated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    session: Mapped["Session"] = relationship("Session", back_populates="monsters")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender: Mapped[str] = mapped_column(String(50), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+    session: Mapped["Session"] = relationship("Session", back_populates="messages")
 
 
 class NPC(Base):
-    __tablename__ = "npc"
+    __tablename__ = "npcs"
 
-    id_npc: Mapped[UUID] = mapped_column(
+    id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    objetivo_pedagogico: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_npc: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text("'{}'::jsonb"),
-    )
 
 
-class SessaoJogo(Base):
-    __tablename__ = "sessao_jogo"
+# Model aliases
+SessionModel = Session
+HeroModel = Hero
+MonsterModel = Monster
+MessageModel = Message
+NPCModel = NPC
 
-    id_sessao: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        primary_key=True,
-        default=uuid4,
-        server_default=text("gen_random_uuid()"),
-    )
-    id_usuario: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("usuario.id_usuario", ondelete="CASCADE"),
-        nullable=False,
-    )
-    status: Mapped[str] = mapped_column(String(50), nullable=False)
-    criado_em: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
-    )
-
-
-class EstadoSessao(Base):
-    __tablename__ = "estado_sessao"
-
-    id_sessao: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("sessao_jogo.id_sessao", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    variaveis_jogo: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text("'{}'::jsonb"),
-    )
-    progresso_pedagogico: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text("'{}'::jsonb"),
-    )
-    ultima_atualizacao: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
-    )
-
-
-class HistoricoMensagens(Base):
-    __tablename__ = "historico_mensagens"
-
-    id_mensagem: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        primary_key=True,
-        default=uuid4,
-        server_default=text("gen_random_uuid()"),
-    )
-    id_sessao: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("sessao_jogo.id_sessao", ondelete="CASCADE"),
-        nullable=False,
-    )
-    remetente: Mapped[str] = mapped_column(String(50), nullable=False)
-    conteudo: Mapped[str] = mapped_column(Text, nullable=False)
-    # embedding: Mapped[list[float] | None] = mapped_column(
-    #     Vector(1536),
-    #     nullable=True,
-    # )
-    criado_em: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
-    )
+# Backward compatibility aliases
+SessaoJogo = Session
+HeroiSessao = Hero
+MonstroSessao = Monster
+HistoricoMensagens = Message

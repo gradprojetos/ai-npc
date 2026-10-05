@@ -18,8 +18,8 @@ Sistema de NPCs com IA conversacional para jogos educacionais, integrado com Tel
 | Mês | Foco | Isaac | Murillo | Entrega |
 |-----|------|-------|---------|---------|
 | **Ago** | Setup | LLM Gateway + testes | PostgreSQL + FastAPI | Telegram Bot ecoando mensagens da IA|
-| **Set** | Lógica | LangGraph (RPGGraphState) | Motor RPG + rotas | Bot conversando com IA |
-| **Out** | Integração | Motor Guardrails (Nvidia) | Orquestração assíncrona | Sistema com validações |
+| **Set** | Lógica | LangGraph (RPGGraphState) | Motor RPG + rotas | Jogar o jogo|
+| **Out** | Integração | Motor Guardrails (Nvidia) | Pipeline completo com Guardrails | Sistema com validações |
 | **Nov** | Validação | Tuning + métricas (Langfuse) | Testes de carga (Langfuse) | Playtesting + PFG |
 
 ---
