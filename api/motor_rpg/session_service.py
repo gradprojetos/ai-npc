@@ -92,20 +92,45 @@ def add_or_update_player(
 
 
 
+def resolve_session_uuid(session_id: str) -> uuid.UUID:
+    """Garante um UUID válido para chaves primárias do PostgreSQL."""
+    try:
+        return uuid.UUID(session_id)
+    except (ValueError, TypeError, AttributeError):
+        return uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id))
+
+
 def get_or_create_session_state(
     session_id: str,
     user_info: dict | None = None,
     default_archetype: str | None = None,
 ) -> GameState:
     """Recupera o GameState do PostgreSQL ou da memória, ou cria uma nova partida."""
+    session_uuid = resolve_session_uuid(session_id)
+    chat_id_int = None
+    if user_info and user_info.get("chat_id") is not None:
+        try:
+            chat_id_int = int(user_info["chat_id"])
+        except (ValueError, TypeError):
+            pass
+    elif str(session_id).lstrip("-").isdigit():
+        try:
+            chat_id_int = int(session_id)
+        except (ValueError, TypeError):
+            pass
+
     # 1. Tenta carregar do banco de dados relacional normalizado
     try:
-        session_uuid = uuid.UUID(session_id)
         with SessionLocal() as db:
-            session_db = db.query(Session).filter_by(session_id=session_uuid).first()
+            session_db = None
+            if chat_id_int is not None:
+                session_db = db.query(Session).filter_by(chat_id=chat_id_int).first()
+            if not session_db:
+                session_db = db.query(Session).filter_by(session_id=session_uuid).first()
+
             if session_db:
                 # Carrega heróis da sessão
-                db_heroes = db.query(Hero).filter_by(session_id=session_uuid).all()
+                db_heroes = db.query(Hero).filter_by(session_id=session_db.session_id).all()
                 players = [
                     HeroState(
                         player_id=h.player_id,
@@ -122,7 +147,7 @@ def get_or_create_session_state(
                 ]
 
                 # Carrega monstros da sessão
-                db_monsters = db.query(Monster).filter_by(session_id=session_uuid).all()
+                db_monsters = db.query(Monster).filter_by(session_id=session_db.session_id).all()
                 monsters = [
                     MonsterState(
                         name=m.name,
@@ -141,7 +166,7 @@ def get_or_create_session_state(
                 # Carrega mensagens recentes
                 db_messages = (
                     db.query(MessageDB)
-                    .filter_by(session_id=session_uuid)
+                    .filter_by(session_id=session_db.session_id)
                     .order_by(MessageDB.timestamp.desc())
                     .limit(5)
                     .all()
@@ -171,39 +196,53 @@ def get_or_create_session_state(
                     is_victory=session_db.is_victory,
                 )
                 set_memory_session(session_id, state)
+                set_memory_session(str(session_db.session_id), state)
                 return state
     except Exception as e:
         logger.debug(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
 
     # 2. Tenta recuperar da memória
     cached = get_memory_session(session_id)
+    if not cached and str(session_uuid) != session_id:
+        cached = get_memory_session(str(session_uuid))
     if cached:
         return cached
 
     # 3. Cria nova sessão inicial
-    chat_id = user_info.get("chat_id") if user_info else None
-    player_id = str(user_info.get("player_id") or chat_id or "player_1") if user_info else "player_1"
+    player_id = str(user_info.get("player_id") or chat_id_int or "player_1") if user_info else "player_1"
     archetype = default_archetype or (user_info.get("archetype") if user_info else None) or "Jorick"
 
     initial_hero = create_hero(archetype, player_id=player_id)
     new_state = create_initial_rpg_state(session_id=session_id, initial_hero=initial_hero)
 
     # Tenta persistir no banco relacional
-    persist_session_state_to_db(new_state, chat_id=chat_id)
+    persist_session_state_to_db(new_state, chat_id=chat_id_int)
     return new_state
 
 
 def persist_session_state_to_db(state: GameState, chat_id: int | None = None) -> bool:
     """Persiste o GameState nas tabelas relacionais explícitas (sessions, heroes, monsters, messages)."""
     try:
-        session_uuid = uuid.UUID(state.session_id)
+        session_uuid = resolve_session_uuid(state.session_id)
+        chat_id_int = chat_id
+        if chat_id_int is None and str(state.session_id).lstrip("-").isdigit():
+            try:
+                chat_id_int = int(state.session_id)
+            except (ValueError, TypeError):
+                pass
+
         with SessionLocal() as db:
             # 1. Atualiza ou insere session
-            session_record = db.query(Session).filter_by(session_id=session_uuid).first()
+            session_record = None
+            if chat_id_int is not None:
+                session_record = db.query(Session).filter_by(chat_id=chat_id_int).first()
+            if not session_record:
+                session_record = db.query(Session).filter_by(session_id=session_uuid).first()
+
             if not session_record:
                 session_record = Session(
                     session_id=session_uuid,
-                    chat_id=chat_id,
+                    chat_id=chat_id_int,
                     location=state.location,
                     is_victory=state.is_victory,
                 )
@@ -211,13 +250,15 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
             else:
                 session_record.location = state.location
                 session_record.is_victory = state.is_victory
+                if chat_id_int is not None:
+                    session_record.chat_id = chat_id_int
 
             # 2. Atualiza ou insere heroes
             for hero in state.players:
-                db_hero = db.query(Hero).filter_by(session_id=session_uuid, player_id=hero.player_id).first()
+                db_hero = db.query(Hero).filter_by(session_id=session_record.session_id, player_id=hero.player_id).first()
                 if not db_hero:
                     db_hero = Hero(
-                        session_id=session_uuid,
+                        session_id=session_record.session_id,
                         player_id=hero.player_id,
                         name=hero.name,
                         class_name=hero.class_name,
@@ -268,7 +309,7 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
             # 4. Registra mensagens recentes não persistidas
             for msg in state.recent_messages[-3:]:
                 db_msg = MessageDB(
-                    session_id=session_uuid,
+                    session_id=session_record.session_id,
                     sender=msg.sender,
                     role=msg.role,
                     content=msg.content,
@@ -282,26 +323,53 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
         return False
 
 
-def reset_player_session(chat_id: int) -> bool:
-    """Apaga os dados da sessão do jogador no banco e na memória."""
-    logger.info(f"Resetando sessão de jogo para chat_id={chat_id}")
+def reset_game_session(identifier: int | str) -> bool:
+    """Apaga completamente a sessão do jogo (arena, monstros, todos os heróis e histórico) no banco e na memória."""
+    logger.info(f"Resetando sessão completa de jogo para identifier={identifier}")
     cleared = False
+
+    chat_id_int = None
+    if str(identifier).lstrip("-").isdigit():
+        try:
+            chat_id_int = int(identifier)
+        except (ValueError, TypeError):
+            pass
+
+    session_uuid = resolve_session_uuid(str(identifier))
+
     try:
         with SessionLocal() as db:
-            session_db = db.query(Session).filter_by(chat_id=chat_id).first()
-            if session_db:
-                session_id_str = str(session_db.session_id)
-                db.delete(session_db)
-                db.commit()
-                clear_memory_session(session_id_str)
+            sessions = []
+            if chat_id_int is not None:
+                sessions = db.query(Session).filter(
+                    (Session.chat_id == chat_id_int) | (Session.session_id == session_uuid)
+                ).all()
+            else:
+                sessions = db.query(Session).filter_by(session_id=session_uuid).all()
+
+            for s in sessions:
+                logger.info(f"Excluindo sessão {s.session_id} (chat_id={s.chat_id}) e seus relacionamentos do banco.")
+                db.delete(s)
                 cleared = True
+            db.commit()
     except Exception as e:
         logger.warning(f"Erro ao resetar sessão no banco: {e}")
 
-    # Limpa da memória caso o ID do chat seja a chave ou esteja nos jogadores
+    # Limpa da memória todas as chaves associadas a essa sessão
+    keys_to_clear = {str(identifier), str(session_uuid)}
+    if chat_id_int is not None:
+        keys_to_clear.add(str(chat_id_int))
+
+    for k in keys_to_clear:
+        clear_memory_session(k)
+
     for sid, state in list(_MEMORY_SESSIONS.items()):
-        if sid == str(chat_id) or any(p.player_id == str(chat_id) for p in state.players):
+        if sid in keys_to_clear or any(p.player_id in keys_to_clear for p in state.players):
             clear_memory_session(sid)
             cleared = True
 
     return cleared or True
+
+
+# Mantém alias para compatibilidade com outros módulos e testes
+reset_player_session = reset_game_session

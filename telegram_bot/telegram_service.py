@@ -1,8 +1,10 @@
 import os
+import re
+import inspect
 import httpx
 import asyncio
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -14,12 +16,12 @@ class TelegramService:
         self.webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
         self.app: Application | None = None
         self.on_message_callback: Callable[[str, dict], Awaitable[str]] | None = None
-        self.on_reset_callback: Callable[[int], Awaitable[None]] | None = None
+        self.on_reset_callback: Callable[[int], Any] | None = None
 
     async def setup(
         self, 
         on_message: Callable[[str, dict], Awaitable[str]],
-        on_reset: Callable[[int], Awaitable[None]] | None = None,
+        on_reset: Callable[[int], Any] | None = None,
     ) -> None:
         """Inicializa a aplicação do Telegram recebendo o orquestrador e handler de reset como callbacks."""
         if not self.token:
@@ -31,7 +33,7 @@ class TelegramService:
 
         self.app.add_handler(CommandHandler("start", self._start_handler))
         self.app.add_handler(CommandHandler("reset", self._reset_handler))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._message_handler))
+        self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
         await self.app.initialize()
         await self.app.start()
@@ -95,19 +97,38 @@ class TelegramService:
             await update.message.reply_text("Olá recruta! Eu sou Loomis, o treinador de Hesiod! Diga-me o que quer fazer ou ataque a fera na jaula!")
 
     async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /reset para apagar o histórico e recomeçar a conversa."""
+        """Comando /reset para apagar a sessão inteira da arena/grupo e recomeçar a partida."""
         if not update.message or not update.effective_user:
             return
 
-        telegram_id = update.effective_user.id
-        logger.info(f"Comando /reset recebido de user_id={telegram_id}")
+        chat = update.effective_chat
+        user = update.effective_user
+        # Em grupo, o reset zera a sessão compartilhada do grupo inteiro (chat.id)
+        target_id = chat.id if chat else user.id
+        logger.info(f"Comando /reset recebido de user_id={user.id} para session target_id={target_id}")
+
         if self.on_reset_callback:
             try:
-                await self.on_reset_callback(telegram_id)
-                await update.message.reply_text("Histórico e memória apagados! Pode começar de novo.")
+                if inspect.iscoroutinefunction(self.on_reset_callback):
+                    await self.on_reset_callback(target_id)
+                else:
+                    await asyncio.to_thread(self.on_reset_callback, target_id)
+
+                reply_msg = (
+                    "<b>Sessão de jogo reiniciada com sucesso!</b>\n\n"
+                    "• <b>Arena de Hesiod:</b> Restaurada para a <b>Jaula 1</b> com o <b>Bullette Faminto</b> (HP: 8/8 | CA: 15).\n"
+                    "• <b>Grupo e Heróis:</b> Status de combate e histórico de todos os recrutas zerados.\n\n"
+                    "<b>Loomis:</b> <i>\"A jaula está trancada de novo! Parem de conversa fiada, peguem seus dados e me mostrem do que são capazes!\"</i>"
+                )
+                try:
+                    await update.message.reply_text(reply_msg, parse_mode="HTML")
+                except Exception:
+                    await update.message.reply_text(
+                        "Sessão de jogo reiniciada com sucesso! A arena de Hesiod foi restaurada: Jaula 1 trancada com o Bullette Faminto (HP 8/8) e histórico zerado."
+                    )
             except Exception as e:
                 logger.error(f"Erro ao processar /reset: {e}", exc_info=True)
-                await update.message.reply_text("Ocorreu um erro ao tentar reiniciar seu histórico.")
+                await update.message.reply_text("Ocorreu um erro ao tentar reiniciar a sessão do jogo.")
         else:
             await update.message.reply_text("Comando de reset não configurado.")
 
@@ -116,12 +137,30 @@ class TelegramService:
         if not update.message or not update.message.text or not self.on_message_callback:
             return
 
-        user_text = update.message.text
-        if context.bot.username:
-            user_text = user_text.replace(f"@{context.bot.username}", "").strip()
-
-        user = update.effective_user
         chat = update.effective_chat
+        user = update.effective_user
+        raw_text = update.message.text.strip()
+        is_command = raw_text.startswith("/")
+
+        # Em grupos, se for mensagem de texto comum (não-comando) dirigida a outro humano, a IA não responde:
+        if not is_command and chat and chat.type in ("group", "supergroup"):
+            # 1. Se for reply direcionado a outro usuário humano:
+            if update.message.reply_to_message and update.message.reply_to_message.from_user:
+                if update.message.reply_to_message.from_user.id != context.bot.id:
+                    return
+
+            # 2. Se contiver menção @ a outra pessoa e não mencionar o bot:
+            mentions = re.findall(r"@([a-zA-Z0-9_]+)", raw_text)
+            bot_username = (context.bot.username or "").lower()
+            if mentions:
+                has_bot_mention = any(m.lower() == bot_username for m in mentions)
+                if not has_bot_mention:
+                    return
+
+        user_text = raw_text
+        if context.bot.username:
+            user_text = re.sub(rf"@{re.escape(context.bot.username)}", "", user_text, flags=re.IGNORECASE).strip()
+
         logger.info(f"Mensagem recebida [chat_id={chat.id if chat else None}, user={user.username if user else None}]: '{user_text}'")
 
         user_info = {
@@ -145,4 +184,8 @@ class TelegramService:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
 
-        await update.message.reply_text(reply_text)
+        try:
+            await update.message.reply_text(reply_text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Erro ao enviar resposta com parse_mode=HTML: {e}. Enviando como texto puro.")
+            await update.message.reply_text(reply_text)

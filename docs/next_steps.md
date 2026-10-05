@@ -10,7 +10,7 @@ Este documento detalha o plano de execução focado na **experiência de jogo re
 | :---: | :--- | :--- | :--- | :--- |
 | **P1** | **1. Roteamento de Combate** | *"ataco com 19"*, *"atacou com 20"* caem em Dica Tática em vez de Combate. | Regex estática não entende linguagem natural livre de RPG. | Nó classificador de decisão inteligente (via Clef-Flash ou LLM tradicional com JSON estruturado). |
 | **P1** | **2. Alucinação de Morte** | LLM disse que o monstro morreu, mas no motor ele estava com 7/8 de vida. | Ausência do Dungeon Master explícito e falta de trava anti-alucinação no prompt do NPC. | Trava rígida no prompt proibindo declarar morte e inclusão do bloco mecânico inquestionável do Dungeon Master. |
-| **P1** | **3. Mensagens no Grupo** | Bot responde a conversas paralelas e replies entre humanos. | Falta de filtro de remetente e contexto de grupo no handler. | Responder no grupo **apenas** se o bot for mencionado (`@pfg_npc_bot`) ou se for reply a mensagem dele. |
+| **P1** | **3. Mensagens no Grupo** | Bot responde a conversas paralelas e replies entre humanos. | Falta de filtro de direcionamento no handler. | Ignorar se dirigida a outro humano (via reply ou @), mas aceitar comandos universalmente e falas abertas de jogo. |
 | **P1** | **4. Formatação Telegram** | Asteriscos literais `**` vazam no chat sem negrito real. | Telegram API trata Markdown de forma estrita ou requer `parse_mode="HTML"`. | Migrar a saída para `parse_mode="HTML"` (`<b>`, `<code>`, `<i>`). |
 | **P2** | **5. HUD e Separação de Vozes** | Jogador não sabe HP/CA do monstro e não distingue regra de roleplay. | Mecânica determinística misturada com texto de IA em um bloco único. | Formatar em **Dungeon Master:** (dados/HP) e **Loomis:** (fala em 1ª pessoa). |
 | **P2** | **6. Turno Canônico do Monstro** | Contra-ataque da criatura não é reportado com clareza. | Combate parece unilateral se a fera não revidar imediatamente. | Executar e reportar deterministicamente a reação da fera contra o herói com maior HP conforme `game_rules.md`. |
@@ -49,13 +49,15 @@ Este documento detalha o plano de execução focado na **experiência de jogo re
 ---
 
 ### Tarefa 3: Filtro Rígido de Interação em Grupos (`telegram_service.py`)
-* Em chats privados (`chat.type == "private"`): processa todas as mensagens normalmente.
-* Em grupos (`chat.type in ["group", "supergroup"]`):
-  * **Ignorar** conversas paralelas e replies entre outros usuários humanos.
-  * **Aceitar** somente se:
-    1. A mensagem contiver menção explícita ao bot (`@pfg_npc_bot`), limpando a tag antes de processar; **OU**
-    2. A mensagem for um **Reply direto** a uma mensagem enviada pelo próprio bot (`message.reply_to_message.from_user.id == bot.id`); **OU**
-    3. For um comando de jogo (`/escolher`, `/reset`, `/ajuda`).
+* **Regra 1: Comandos são Universais (Sempre Processados):**
+  * Qualquer comando de jogo (mensagens iniciando com `/`, ex: `/reset`, `/escolher`, `/ajuda`) deve ser recebido e processado obrigatoriamente pelo chatbot, **independente de a quem foi dirigida a mensagem ou se foi enviada em reply a outro usuário**.
+  * *Nota de Design:* O comando `/start` **não existe** no jogo canônico de Hesiod (apenas `/reset`, `/escolher`, `/ajuda`, etc.).
+* **Regra 2: Mensagens Dirigidas a Outros Humanos NÃO são Respondidas pela IA:**
+  * Em grupos (`chat.type in ["group", "supergroup"]`), uma mensagem de texto (não-comando) **NUNCA** pode ser respondida pela IA se for dirigida a outra pessoa:
+    1. **Se for Reply a outro usuário humano** (`message.reply_to_message.from_user.id != bot.id`); **OU**
+    2. **Se contiver menção `@` a outro usuário** que não seja o bot (`@pfg_npc_bot`).
+* **Regra 3: Falas Abertas do Jogo:**
+  * Mensagens normais de RPG enviadas no chat em grupo (ex: *"ataco com 19"*, *"o que vemos na jaula?"*) que **não** foram dirigidas a outra pessoa com reply ou menção continuam sendo recebidas e processadas pela IA/DM normalmente.
 
 ---
 
