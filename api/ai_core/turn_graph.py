@@ -217,6 +217,14 @@ async def npc_node(state: GameState) -> dict:
         else ""
     )
 
+    format_instructions = (
+        "\n\n[DIRETRIZ DE FORMATAÇÃO]:\n"
+        "- Responda formatando seu texto exclusivamente com tags HTML aceitas pelo Telegram (ex: <b>negrito</b>, <i>itálico</i>, <code>código</code>).\n"
+        "- NUNCA use Markdown (como **, *, _, ou ### para títulos).\n"
+        "- Fale sempre em primeira pessoa como Loomis, de forma concisa e direta."
+    )
+    effective_system_prompt = (npc_prompt + format_instructions).strip()
+
     prompt_context = (
         f"Contexto do Treino e Regras:\n{state.last_context}\n\nMensagem do jogador: {last_user_message}"
         if state.last_context
@@ -226,7 +234,7 @@ async def npc_node(state: GameState) -> dict:
     logger.info(f"Gerando resposta do Loomis via LLM para: '{prompt_context}'")
     resposta_texto = await llm_client.generate_reply(
         message=prompt_context,
-        system_prompt=npc_prompt,
+        system_prompt=effective_system_prompt,
     )
 
     npc_message = Message(

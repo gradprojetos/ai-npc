@@ -11,18 +11,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 logger = logging.getLogger(__name__)
 
 
-def format_to_html(text: str) -> str:
-    """Converte formatação Markdown básica para HTML suportado pelo Telegram."""
-    if not text:
-        return ""
-    # Converte **negrito** para <b>negrito</b>
-    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    # Converte *itálico* para <i>itálico</i>
-    formatted = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", formatted)
-    # Converte `código` para <code>código</code>
-    formatted = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", formatted)
-    return formatted
-
 class TelegramService:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -201,9 +189,8 @@ class TelegramService:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
 
-        formatted_reply = format_to_html(reply_text)
         try:
-            await update.message.reply_text(formatted_reply, parse_mode="HTML")
+            await update.message.reply_text(reply_text, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Erro ao enviar resposta com parse_mode=HTML: {e}. Enviando como texto puro.")
             await update.message.reply_text(reply_text)
