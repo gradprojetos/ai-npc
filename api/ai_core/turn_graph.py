@@ -1,5 +1,4 @@
 import logging
-import re
 from datetime import datetime, timezone
 from langgraph.graph import StateGraph, START, END
 from api.schemas.rpg import GameState, Message
@@ -10,41 +9,58 @@ logger = logging.getLogger(__name__)
 llm_client = LLMClient()
 
 
-def extract_d20(text: str) -> int | None:
-    """Extrai a rolagem física de um d20 (1 a 20) informada pelo jogador."""
-    patterns = [
-        r"d20\s*[:=]?\s*(\d{1,2})",
-        r"(?:tirei|rolei|deu|caiu)\s*(\d{1,2})",
-        r"\b(\d{1,2})\s*(?:no\s*d20|no\s*dado)\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            val = int(match.group(1))
-            if 1 <= val <= 20:
-                return val
-
-    cleaned = text.strip()
-    if cleaned.isdigit():
-        val = int(cleaned)
-        if 1 <= val <= 20:
-            return val
+async def extract_d20(text: str) -> int | None:
+    """Extrai a rolagem física de um d20 (1 a 20) informada pelo jogador via LLM."""
+    if not text.strip():
+        return None
+    try:
+        response = await llm_client.generate_reply(
+            message=text,
+            system_prompt=(
+                "Extraia o valor da rolagem de dado d20 (número de 1 a 20) mencionado pelo jogador.\n"
+                "Exemplos:\n"
+                "- 'ataco com 19' -> 19\n"
+                "- 'rolei 15' -> 15\n"
+                "- 'deu 20 no dado' -> 20\n"
+                "- 'dou um golpe com minha espada' -> null\n"
+                "Responda estritamente APENAS o número inteiro ou 'null'."
+            ),
+            temperature=0.0,
+            max_tokens=10,
+        )
+        cleaned = response.strip()
+        if cleaned.isdigit() and 1 <= int(cleaned) <= 20:
+            return int(cleaned)
+    except Exception as e:
+        logger.warning(f"Falha ao extrair d20 via LLM: {e}")
     return None
 
 
-def classify_intent_node(state: GameState) -> dict:
-    """Nó para pré-processar ou registrar a intenção do turno atual."""
-    last_user_msg = ""
-    for msg in reversed(state.recent_messages):
-        if msg.role == "user":
-            last_user_msg = msg.content
-            break
+async def classify_intent(text: str) -> str:
+    """Classifica a intenção da mensagem via LLM ('combat' ou 'tactical_advice')."""
+    if not text.strip():
+        return "tactical_advice"
 
-    logger.info(f"Classificando mensagem no grafo: '{last_user_msg}'")
-    d20 = extract_d20(last_user_msg)
-    if d20 is not None:
-        logger.info(f"Rolagem de d20 identificada: {d20}")
-    return {}
+    prompt = (
+        "Você é o classificador de ações de um RPG de mesa textual.\n"
+        "Analise a mensagem do jogador e decida se a ação é de COMBATE (atacar, golpear, atirar flecha, magia ofensiva, rolar dados de ataque) "
+        "ou se é CONSELHO TÁTICO / CONVERSA (pedir dica, perguntar fraquezas, tirar dúvidas, conversar com o treinador).\n"
+        "Responda APENAS 'combat' ou 'tactical_advice'."
+    )
+    try:
+        response = await llm_client.generate_reply(
+            message=text,
+            system_prompt=prompt,
+            temperature=0.0,
+            max_tokens=10,
+        )
+        decision = response.strip().lower()
+        if "combat" in decision:
+            return "combat"
+        return "tactical_advice"
+    except Exception as e:
+        logger.warning(f"Falha ao classificar intenção via LLM ({e}), direcionando para tactical_advice.")
+        return "tactical_advice"
 
 
 def tactical_advice_node(state: GameState) -> dict:
@@ -83,7 +99,7 @@ def tactical_advice_node(state: GameState) -> dict:
     return {"last_context": last_context}
 
 
-def combat_node(state: GameState) -> dict:
+async def combat_node(state: GameState) -> dict:
     """Nó para resolução determinística de combate e rolagem de dados."""
     logger.info("Executando nó de combate...")
 
@@ -93,7 +109,7 @@ def combat_node(state: GameState) -> dict:
             last_user_message = msg.content
             break
 
-    d20 = extract_d20(last_user_message)
+    d20 = await extract_d20(last_user_message)
 
     # Se o d20 não foi informado: sinaliza para Loomis solicitar a rolagem física
     if d20 is None:
@@ -228,26 +244,15 @@ async def npc_node(state: GameState) -> dict:
     }
 
 
-def route_intent(state: GameState) -> str:
-    """Bifurca o fluxo entre combate e diálogo/dica tática."""
-    if not state.recent_messages:
-        return "tactical_advice"
-
-    last_content = ""
+async def route_intent(state: GameState) -> str:
+    """Roteia o fluxo entre combate e dica tática chamando a classificação."""
+    last_user_message = ""
     for msg in reversed(state.recent_messages):
         if msg.role == "user":
-            last_content = msg.content.lower()
+            last_user_message = msg.content
             break
 
-    combat_keywords = [
-        "atacar", "ataque", "golpe", "golpear", "bater", "espada",
-        "magia", "flecha", "machado", "lutar", "investida", "d20",
-        "rolei", "tirei", "dado"
-    ]
-
-    if any(keyword in last_content for keyword in combat_keywords):
-        return "combat"
-    return "tactical_advice"
+    return await classify_intent(last_user_message)
 
 
 def build_turn_graph():
@@ -255,15 +260,13 @@ def build_turn_graph():
     workflow = StateGraph(GameState)
 
     # Registro dos nós
-    workflow.add_node("classify", classify_intent_node)
     workflow.add_node("combat", combat_node)
     workflow.add_node("tactical_advice", tactical_advice_node)
     workflow.add_node("npc", npc_node)
 
-    # Definição das arestas e bifurcação condicional
-    workflow.add_edge(START, "classify")
+    # Bifurcação direta a partir do START
     workflow.add_conditional_edges(
-        "classify",
+        START,
         route_intent,
         {
             "combat": "combat",

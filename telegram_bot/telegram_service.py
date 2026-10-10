@@ -10,6 +10,19 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 logger = logging.getLogger(__name__)
 
+
+def format_to_html(text: str) -> str:
+    """Converte formatação Markdown básica para HTML suportado pelo Telegram."""
+    if not text:
+        return ""
+    # Converte **negrito** para <b>negrito</b>
+    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    # Converte *itálico* para <i>itálico</i>
+    formatted = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", formatted)
+    # Converte `código` para <code>código</code>
+    formatted = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", formatted)
+    return formatted
+
 class TelegramService:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -94,7 +107,12 @@ class TelegramService:
 
     async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
-            await update.message.reply_text("Olá recruta! Eu sou Loomis, o treinador de Hesiod! Diga-me o que quer fazer ou ataque a fera na jaula!")
+            await update.message.reply_text(
+                "Olá recruta! Eu sou <b>Loomis</b>, o treinador de Hesiod!\n"
+                "Diga-me o que quer fazer ou ataque a fera na jaula!\n\n"
+                "• Use <code>/reset</code> para reiniciar o treino.",
+                parse_mode="HTML",
+            )
 
     async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /reset para apagar a sessão inteira da arena/grupo e recomeçar a partida."""
@@ -149,13 +167,12 @@ class TelegramService:
                 if update.message.reply_to_message.from_user.id != context.bot.id:
                     return
 
-            # 2. Se contiver menção @ a outra pessoa e não mencionar o bot:
+            # 2. Se contiver menção @ a outro usuário que não seja o bot:
             mentions = re.findall(r"@([a-zA-Z0-9_]+)", raw_text)
             bot_username = (context.bot.username or "").lower()
-            if mentions:
-                has_bot_mention = any(m.lower() == bot_username for m in mentions)
-                if not has_bot_mention:
-                    return
+            other_mentions = [m for m in mentions if m.lower() != bot_username]
+            if other_mentions:
+                return
 
         user_text = raw_text
         if context.bot.username:
@@ -184,8 +201,9 @@ class TelegramService:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
 
+        formatted_reply = format_to_html(reply_text)
         try:
-            await update.message.reply_text(reply_text, parse_mode="HTML")
+            await update.message.reply_text(formatted_reply, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Erro ao enviar resposta com parse_mode=HTML: {e}. Enviando como texto puro.")
             await update.message.reply_text(reply_text)
