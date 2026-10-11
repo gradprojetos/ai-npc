@@ -11,10 +11,36 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 logger = logging.getLogger(__name__)
 
 
+def format_to_telegram_html(text: str) -> str:
+    """Converte Markdown para tags HTML e escapa caracteres fora de tags válidas do Telegram."""
+    if not text:
+        return ""
+    # Converte **negrito** para <b>negrito</b>
+    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    # Converte *itálico* para <i>itálico</i>
+    formatted = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", formatted)
+    # Converte `código` para <code>código</code>
+    formatted = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", formatted)
+
+    # Escapa caracteres &, <, > fora de tags HTML válidas do Telegram
+    valid_tag_pattern = r"(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)\b[^>]*>|<a\s+href=\"[^\"]+\"[^>]*>|</a>)"
+    tokens = re.split(valid_tag_pattern, formatted, flags=re.IGNORECASE)
+    parts: list[str] = []
+    for i, token in enumerate(tokens):
+        if i % 2 == 1:
+            parts.append(token)
+        else:
+            escaped = re.sub(r"&(?!amp;|lt;|gt;|quot;)", "&amp;", token)
+            escaped = escaped.replace("<", "&lt;").replace(">", "&gt;")
+            parts.append(escaped)
+    return "".join(parts)
+
+
 class TelegramService:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
+        self.bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "pfg_npc_bot").lower()
         self.app: Application | None = None
         self.on_message_callback: Callable[[str, dict], Awaitable[str]] | None = None
         self.on_reset_callback: Callable[[int], Any] | None = None
@@ -32,13 +58,20 @@ class TelegramService:
         self.on_reset_callback = on_reset
         self.app = Application.builder().token(self.token).build()
 
+        self.app.add_handler(CommandHandler(["ajuda", "help"], self._ajuda_handler))
         self.app.add_handler(CommandHandler("start", self._start_handler))
         self.app.add_handler(CommandHandler("reset", self._reset_handler))
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
         await self.app.initialize()
         await self.app.start()
-        logger.info("Telegram Application inicializada com sucesso.")
+        try:
+            bot_me = await self.app.bot.get_me()
+            if bot_me and bot_me.username:
+                self.bot_username = bot_me.username.lower()
+        except Exception as e:
+            logger.debug(f"Não foi possível obter username do bot via get_me: {e}")
+        logger.info(f"Telegram Application inicializada com sucesso (bot_username=@{self.bot_username}).")
 
     async def _get_cloudflared_url(self) -> str | None:
         """Tenta descobrir a URL pública gerada pelo container do cloudflared na rede Docker."""
@@ -94,13 +127,28 @@ class TelegramService:
             logger.info("Telegram Application finalizada.")
 
     async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if update.message:
-            await update.message.reply_text(
-                "Olá recruta! Eu sou <b>Loomis</b>, o treinador de Hesiod!\n"
-                "Diga-me o que quer fazer ou ataque a fera na jaula!\n\n"
-                "• Use <code>/reset</code> para reiniciar o treino.",
-                parse_mode="HTML",
-            )
+        """Comando /start direciona para a introdução e ajuda de Hesiod."""
+        await self._ajuda_handler(update, context)
+
+    async def _ajuda_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /ajuda para explicar comandos e regras de jogo em formato HTML."""
+        if not update.message:
+            return
+        help_text = (
+            "⚔️ <b>Arena de Treinamento de Hesiod — Regras & Comandos</b>\n\n"
+            "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! Aqui você aprende a enfrentar feras reais antes de sair para o mundo.\n\n"
+            "📋 <b>Comandos do Jogo:</b>\n"
+            "• <code>/ajuda</code> - Exibe estas instruções e regras da arena.\n"
+            "• <code>/reset</code> - Reinicia a sessão da arena (restaura a Jaula 1 e todos os heróis).\n\n"
+            "🎲 <b>Como Jogar:</b>\n"
+            "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i> ou <i>\"golpeio a fera tirei 15\"</i>).\n"
+            "• <b>Conselho Tático:</b> Peça dicas ou pergunte sobre as fraquezas da fera na jaula (Ação Livre, não gasta turno).\n"
+            "• <b>No Grupo:</b> Comandos funcionam sempre. Falas abertas de RPG são respondidas pela arena, mas conversas entre jogadores com reply ou menção @ são ignoradas pela IA."
+        )
+        try:
+            await update.message.reply_text(help_text, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(help_text)
 
     async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /reset para apagar a sessão inteira da arena/grupo e recomeçar a partida."""
@@ -139,7 +187,7 @@ class TelegramService:
             await update.message.reply_text("Comando de reset não configurado.")
 
     async def _message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Recebe texto, passa para a main.py processar e devolve a resposta."""
+        """Recebe texto, passa para a main.py processar e devolve a resposta formatada em HTML."""
         if not update.message or not update.message.text or not self.on_message_callback:
             return
 
@@ -157,14 +205,15 @@ class TelegramService:
 
             # 2. Se contiver menção @ a outro usuário que não seja o bot:
             mentions = re.findall(r"@([a-zA-Z0-9_]+)", raw_text)
-            bot_username = (context.bot.username or "").lower()
+            bot_username = (context.bot.username or self.bot_username or "").lower()
             other_mentions = [m for m in mentions if m.lower() != bot_username]
             if other_mentions:
                 return
 
         user_text = raw_text
-        if context.bot.username:
-            user_text = re.sub(rf"@{re.escape(context.bot.username)}", "", user_text, flags=re.IGNORECASE).strip()
+        bot_username = (context.bot.username or self.bot_username or "").lower()
+        if bot_username:
+            user_text = re.sub(rf"@{re.escape(bot_username)}", "", user_text, flags=re.IGNORECASE).strip()
 
         logger.info(f"Mensagem recebida [chat_id={chat.id if chat else None}, user={user.username if user else None}]: '{user_text}'")
 
@@ -189,8 +238,10 @@ class TelegramService:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
 
+        formatted_reply = format_to_telegram_html(reply_text)
         try:
-            await update.message.reply_text(reply_text, parse_mode="HTML")
+            await update.message.reply_text(formatted_reply, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Erro ao enviar resposta com parse_mode=HTML: {e}. Enviando como texto puro.")
-            await update.message.reply_text(reply_text)
+            clean_text = re.sub(r"<[^>]+>", "", reply_text)
+            await update.message.reply_text(clean_text)
