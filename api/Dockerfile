@@ -19,6 +19,7 @@ RUN uv sync --frozen
 
 # Garante que os binários do venv do container fiquem no PATH
 ENV PATH="/app/.venv/bin:$PATH"
+ENV TZ="America/Sao_Paulo"
 
 # Inicia o uvicorn lendo a variável de ambiente $API_PORT
 CMD uv run uvicorn api.main:app --host 0.0.0.0 --port ${API_PORT:-8000} --reload
