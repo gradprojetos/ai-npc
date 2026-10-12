@@ -7,10 +7,11 @@ dependencies = [
     "uvicorn",
     "langgraph",
     "python-dotenv",
+    "pydantic",
     "httpx",
     "alembic",
     "sqlalchemy",
     "pgvector",
     "psycopg[binary]",
-    "python-telegram-bot[job-queue]"
+    "python-telegram-bot[job-queue]",
 ]
