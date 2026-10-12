@@ -295,7 +295,7 @@ async def npc_node(state: GameState) -> dict:
             model="ministral-3:8b",
         )
     except Exception as e:
-        logger.warning(f"Falha ao gerar fala do Loomis via LLM ({e}), usando fala padrão de treino.")
+        logger.warning(f"Falha ao gerar fala do Loomis via LLM ({repr(e)}), usando fala padrão de treino.")
         if state.is_victory:
             resposta_texto = "Vocês conseguiram, recrutas! Todas as jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
         elif monster_fell:
