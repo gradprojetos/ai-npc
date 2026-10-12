@@ -12,6 +12,10 @@ from api.schemas.rpg import (
 from api.motor_rpg.motor_rpg import (
     create_hero,
     get_cage_monster,
+    HERO_CARDS,
+    CARD_BY_NAME,
+    HERO_ARCHETYPES,
+    get_hero_card_number,
 )
 from db.models import Session, Hero, Monster, Message as MessageDB, NPC
 from db.session import SessionLocal
@@ -86,7 +90,63 @@ def add_or_update_player(
     else:
         state.players.append(hero)
 
-    return hero
+def select_hero_for_player(
+    session_id: str,
+    player_id: str,
+    player_name: str,
+    choice: str | int,
+) -> tuple[bool, str, GameState]:
+    """Vincula um jogador a um dos 5 heróis canônicos e ordena a iniciativa no GameState."""
+    state = get_or_create_session_state(session_id)
+
+    raw = str(choice).strip().lower()
+    card_num = None
+    if raw.isdigit():
+        card_num = int(raw)
+    else:
+        card_num = CARD_BY_NAME.get(raw)
+
+    if not card_num or card_num not in HERO_CARDS:
+        return False, "Escolha inválida! Digite um número de 1 a 5 (ex: <code>/select 1</code>).", state
+
+    arch_key = HERO_CARDS[card_num]
+    arch_data = HERO_ARCHETYPES[arch_key]
+    arch_name = arch_data["name"]
+
+    # Verifica se outro jogador no grupo já escolheu esse herói
+    for p in state.players:
+        if p.player_id != str(player_id) and arch_name.lower() in p.name.lower():
+            return False, f"A carta #{card_num} <b>{arch_name}</b> já foi escolhida por outro recruta!", state
+
+    # Cria a ficha do herói com nome do jogador
+    hero = create_hero(arch_key, player_id=str(player_id), player_name=player_name)
+
+    # Substitui se o mesmo jogador já tinha um herói escolhido
+    existing_idx = next((i for i, p in enumerate(state.players) if p.player_id == str(player_id)), None)
+    if existing_idx is not None:
+        state.players[existing_idx] = hero
+    else:
+        # Se havia apenas o herói genérico inicial sem dono, substitui
+        if len(state.players) == 1 and state.players[0].player_id in ["default", "player_1", ""]:
+            state.players[0] = hero
+        else:
+            state.players.append(hero)
+
+    # Ordena canonicamente a iniciativa (#1 a #5)
+    state.players.sort(key=lambda h: get_hero_card_number(h.name))
+
+    # Persiste na memória e no banco
+    set_memory_session(session_id, state)
+    persist_session_state_to_db(state)
+
+    msg = (
+        f"<b>Recruta Alistado!</b>\n"
+        f"• Jogador: <b>{player_name}</b>\n"
+        f"• Carta #{card_num}: <b>{arch_name}</b> ({hero.class_name})\n"
+        f"• Vida: {hero.hp}/{hero.max_hp} | CA: {hero.ac} | Ataque: +{hero.attack_bonus} ({hero.attack_name})\n\n"
+        f"<i>A ordem dos turnos foi atualizada na Arena.</i>"
+    )
+    return True, msg, state
 
 
 

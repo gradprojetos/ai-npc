@@ -44,23 +44,27 @@ class TelegramService:
         self.app: Application | None = None
         self.on_message_callback: Callable[[str, dict], Awaitable[str]] | None = None
         self.on_reset_callback: Callable[[int], Any] | None = None
+        self.on_select_callback: Callable[..., Any] | None = None
 
     async def setup(
         self, 
         on_message: Callable[[str, dict], Awaitable[str]],
         on_reset: Callable[[int], Any] | None = None,
+        on_select: Callable[..., Any] | None = None,
     ) -> None:
-        """Inicializa a aplicação do Telegram recebendo o orquestrador e handler de reset como callbacks."""
+        """Inicializa a aplicação do Telegram recebendo callbacks para mensagem, reset e seleção de herói."""
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN não configurado.")
 
         self.on_message_callback = on_message
         self.on_reset_callback = on_reset
+        self.on_select_callback = on_select
         self.app = Application.builder().token(self.token).build()
 
+        self.app.add_handler(CommandHandler(["start"], self._start_handler))
+        self.app.add_handler(CommandHandler(["select", "escolher"], self._select_handler))
         self.app.add_handler(CommandHandler(["ajuda", "help"], self._ajuda_handler))
-        self.app.add_handler(CommandHandler("start", self._start_handler))
-        self.app.add_handler(CommandHandler("reset", self._reset_handler))
+        self.app.add_handler(CommandHandler(["reset"], self._reset_handler))
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
         await self.app.initialize()
@@ -127,8 +131,62 @@ class TelegramService:
             logger.info("Telegram Application finalizada.")
 
     async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /start direciona para a introdução e ajuda de Hesiod."""
-        await self._ajuda_handler(update, context)
+        """Apresenta a Arena de Hesiod e recruta os jogadores com as 5 cartas canônicas."""
+        if not update.message:
+            return
+        cards_text = (
+            "<b>Arena de Treinamento de Hesiod</b>\n\n"
+            "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! "
+            "Antes de abrirmos as jaulas, cada recruta deve escolher sua carta:\n\n"
+            "• <code>/select 1</code> - <b>Evindol</b> (Ladino Humano | CA 11 | HP 3 | Ataque +6)\n"
+            "• <code>/select 2</code> - <b>Raen</b> (Bárbara Anã | CA 9 | HP 7 | Ataque +5)\n"
+            "• <code>/select 3</code> - <b>Jorick</b> (Guerreiro Humano | CA 13 | HP 5 | Ataque +4)\n"
+            "• <code>/select 4</code> - <b>Yarrow</b> (Xamã Meio-Orc | CA 10 | HP 6 | Ataque +3)\n"
+            "• <code>/select 5</code> - <b>Bet</b> (Maga Elfa | CA 7 | HP 4 | Ataque +7)\n\n"
+            "Digite <code>/select &lt;1-5&gt;</code> para alistar seu herói na arena!"
+        )
+        try:
+            await update.message.reply_text(cards_text, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(cards_text)
+
+    async def _select_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /select <1-5> para o jogador escolher sua ficha no grupo."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat = update.effective_chat
+        user = update.effective_user
+        session_id = str(chat.id if chat else user.id)
+        player_name = user.first_name or user.username or f"Recruta_{user.id}"
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Informe o número da carta! Exemplo: <code>/select 2</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+        choice = args[0]
+        if self.on_select_callback:
+            try:
+                if inspect.iscoroutinefunction(self.on_select_callback):
+                    success, reply_msg, _ = await self.on_select_callback(session_id, str(user.id), player_name, choice)
+                else:
+                    success, reply_msg, _ = await asyncio.to_thread(
+                        self.on_select_callback, session_id, str(user.id), player_name, choice
+                    )
+            except Exception as e:
+                logger.error(f"Erro ao selecionar herói: {e}", exc_info=True)
+                reply_msg = "Ocorreu um erro ao selecionar o herói."
+        else:
+            reply_msg = "Seleção de herói não configurada."
+
+        try:
+            await update.message.reply_text(reply_msg, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(reply_msg)
 
     async def _ajuda_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /ajuda para explicar comandos e regras de jogo em formato HTML."""
@@ -137,11 +195,13 @@ class TelegramService:
         help_text = (
             "<b>Arena de Treinamento de Hesiod — Regras & Comandos</b>\n\n"
             "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! Aqui você aprende a enfrentar feras reais antes de sair para o mundo.\n\n"
-            "<b>Comandos do Jogo:</b>\n"
-            "• <code>/ajuda</code> - Exibe estas instruções e regras da arena.\n"
-            "• <code>/reset</code> - Reinicia a sessão da arena (restaura a Jaula 1 e todos os heróis).\n\n"
+            "<b>Comandos:</b>\n"
+            "• <code>/start</code> - Apresenta a arena e as 5 cartas de heróis.\n"
+            "• <code>/select &lt;1-5&gt;</code> - Escolhe sua carta para o combate.\n"
+            "• <code>/reset</code> - Reinicia a sessão e permite novo recrutamento.\n"
+            "• <code>/ajuda</code> - Exibe estas instruções.\n\n"
             "<b>Como Jogar:</b>\n"
-            "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i> ou <i>\"golpeio a fera tirei 15\"</i>).\n"
+            "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i>).\n"
             "• <b>Conselho Tático:</b> Peça dicas ou pergunte sobre as fraquezas da fera na jaula (Ação Livre, não gasta turno).\n"
             "• <b>No Grupo:</b> Comandos funcionam sempre. Falas abertas de RPG são respondidas pela arena, mas conversas entre jogadores com reply ou menção @ são ignoradas pela IA."
         )
@@ -157,7 +217,6 @@ class TelegramService:
 
         chat = update.effective_chat
         user = update.effective_user
-        # Em grupo, o reset zera a sessão compartilhada do grupo inteiro (chat.id)
         target_id = chat.id if chat else user.id
         logger.info(f"Comando /reset recebido de user_id={user.id} para session target_id={target_id}")
 
@@ -168,18 +227,12 @@ class TelegramService:
                 else:
                     await asyncio.to_thread(self.on_reset_callback, target_id)
 
-                reply_msg = (
-                    "<b>Sessão de jogo reiniciada com sucesso!</b>\n\n"
-                    "• <b>Arena de Hesiod:</b> Restaurada para a <b>Jaula 1</b> com o <b>Bullette Faminto</b> (HP: 8/8 | CA: 15).\n"
-                    "• <b>Grupo e Heróis:</b> Status de combate e histórico de todos os recrutas zerados.\n\n"
-                    "<b>Loomis:</b> <i>\"A jaula está trancada de novo! Parem de conversa fiada, peguem seus dados e me mostrem do que são capazes!\"</i>"
+                await update.message.reply_text(
+                    "<b>Sessão de jogo reiniciada! A Jaula 1 foi trancada e a arena restaurada.</b>\n\n"
+                    "<i>Escolham novamente seus recrutas para o treino:</i>",
+                    parse_mode="HTML",
                 )
-                try:
-                    await update.message.reply_text(reply_msg, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(
-                        "Sessão de jogo reiniciada com sucesso! A arena de Hesiod foi restaurada: Jaula 1 trancada com o Bullette Faminto (HP 8/8) e histórico zerado."
-                    )
+                await self._start_handler(update, context)
             except Exception as e:
                 logger.error(f"Erro ao processar /reset: {e}", exc_info=True)
                 await update.message.reply_text("Ocorreu um erro ao tentar reiniciar a sessão do jogo.")

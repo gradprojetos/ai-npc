@@ -269,6 +269,8 @@ async def combat_node(state: GameState) -> dict:
             f"• Monstro: <b>{curr_monster.name}</b> (Jaula {curr_monster.cage_number}) [HP: {curr_monster.hp}/{curr_monster.max_hp} | CA: {curr_monster.ac}]"
         )
         arena_lines.append(f"• Heróis: {format_heroes_hud(state.players)}")
+        if len(state.players) > 1:
+            arena_lines.append(f"• Próximo a agir: <b>{state.players[0].name}</b>")
         if monster_defeated_this_turn:
             arena_lines.append(f"• Status: <i>[MONSTRO DERROTADO] {initial_monster_name} tombou na arena! Próxima fera ativa!</i>")
         elif any(h.is_unconscious for h in state.players):

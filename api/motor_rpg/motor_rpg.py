@@ -128,15 +128,45 @@ CAGE_MONSTERS: dict[int, dict[str, Any]] = {
     },
 }
 
+HERO_CARDS: dict[int, str] = {
+    1: "evindol",
+    2: "raen",
+    3: "jorick",
+    4: "yarrow",
+    5: "bet",
+}
+
+CARD_BY_NAME: dict[str, int] = {
+    "evindol": 1,
+    "raen": 2,
+    "jorick": 3,
+    "yarrow": 4,
+    "bet": 5,
+}
+
+
+def get_hero_card_number(name: str) -> int:
+    """Retorna o número da carta (#1 a #5) do herói para ordenação canônica de turnos."""
+    clean = name.lower()
+    for arch_name, card_num in CARD_BY_NAME.items():
+        if arch_name in clean:
+            return card_num
+    return 99
+
 
 def roll_dice(sides: int = 20) -> int:
     """Rola um dado de N faces."""
     return random.randint(1, sides)
 
 
-def create_hero(archetype_or_name: str, player_id: str = "player_1") -> HeroState:
-    """Cria uma instância de HeroState a partir de um arquétipo válido."""
-    key = archetype_or_name.strip().lower()
+def create_hero(archetype_or_name: str | int, player_id: str = "player_1", player_name: str | None = None) -> HeroState:
+    """Cria uma instância de HeroState a partir de um arquétipo válido ou número da carta."""
+    raw = str(archetype_or_name).strip().lower()
+    if raw.isdigit() and int(raw) in HERO_CARDS:
+        key = HERO_CARDS[int(raw)]
+    else:
+        key = raw
+
     data = HERO_ARCHETYPES.get(key)
     if not data:
         # Busca parcial ou fallback para Jorick
@@ -147,9 +177,11 @@ def create_hero(archetype_or_name: str, player_id: str = "player_1") -> HeroStat
     if not data:
         data = HERO_ARCHETYPES["jorick"]
 
+    display_name = f"{data['name']} ({player_name})" if player_name else data["name"]
+
     return HeroState(
         player_id=player_id,
-        name=data["name"],
+        name=display_name,
         class_name=data["class_name"],
         hp=data["hp"],
         max_hp=data["max_hp"],
