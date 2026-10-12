@@ -86,3 +86,10 @@ class GameState(BaseModel):
             self.players.append(self.players.pop(0))
             return self.players[0]
         return None
+
+    def get_last_user_message(self) -> str:
+        """Retorna o conteúdo da última mensagem de usuário ou string vazia."""
+        for msg in reversed(self.recent_messages):
+            if msg.role == "user":
+                return msg.content
+        return ""

@@ -36,6 +36,13 @@ def format_to_telegram_html(text: str) -> str:
     return "".join(parts)
 
 
+async def _invoke_callback(callback: Callable, *args, **kwargs) -> Any:
+    """Invoca callback seja ele assíncrono ou síncrono sem travar o event loop."""
+    if inspect.iscoroutinefunction(callback):
+        return await callback(*args, **kwargs)
+    return await asyncio.to_thread(callback, *args, **kwargs)
+
+
 class TelegramService:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -171,12 +178,9 @@ class TelegramService:
         choice = args[0]
         if self.on_select_callback:
             try:
-                if inspect.iscoroutinefunction(self.on_select_callback):
-                    success, reply_msg, _ = await self.on_select_callback(session_id, str(user.id), player_name, choice)
-                else:
-                    success, reply_msg, _ = await asyncio.to_thread(
-                        self.on_select_callback, session_id, str(user.id), player_name, choice
-                    )
+                success, reply_msg, _ = await self._invoke_callback(
+                    self.on_select_callback, session_id, str(user.id), player_name, choice
+                )
             except Exception as e:
                 logger.error(f"Erro ao selecionar herói: {e}", exc_info=True)
                 reply_msg = "Ocorreu um erro ao selecionar o herói."
@@ -222,10 +226,7 @@ class TelegramService:
 
         if self.on_reset_callback:
             try:
-                if inspect.iscoroutinefunction(self.on_reset_callback):
-                    await self.on_reset_callback(target_id)
-                else:
-                    await asyncio.to_thread(self.on_reset_callback, target_id)
+                await self._invoke_callback(self.on_reset_callback, target_id)
 
                 await update.message.reply_text(
                     "<b>Sessão de jogo reiniciada! A Jaula 1 foi trancada e a arena restaurada.</b>\n\n"

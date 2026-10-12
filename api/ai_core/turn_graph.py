@@ -31,34 +31,24 @@ def format_heroes_hud(players: list) -> str:
 
 
 async def extract_d20(text: str) -> int | None:
-    """Extrai a rolagem física de um d20 (1 a 20) informada pelo jogador via LLM ou regex."""
+    """Extrai a rolagem física de um d20 (1 a 20) informada pelo jogador."""
     if not text.strip():
         return None
-    try:
-        response = await llm_client.generate_reply(
-            message=text,
-            system_prompt=(
-                "Extraia o valor da rolagem de dado d20 (número de 1 a 20) mencionado pelo jogador.\n"
-                "Exemplos:\n"
-                "- 'ataco com 19' -> 19\n"
-                "- 'rolei 15' -> 15\n"
-                "- 'deu 20 no dado' -> 20\n"
-                "- 'dou um golpe com minha espada' -> null\n"
-                "Responda estritamente APENAS o número inteiro ou 'null'."
-            ),
-            temperature=0.0,
-            max_tokens=10,
-        )
-        cleaned = response.strip()
-        if cleaned.isdigit() and 1 <= int(cleaned) <= 20:
-            return int(cleaned)
-    except Exception as e:
-        logger.warning(f"Falha ao extrair d20 via LLM: {e}")
 
-    # Fallback simples por regex
-    match = re.search(r"(?:d20\s*[:=]?\s*|tirei\s+|rolei\s+|com\s+|deu\s+)?\b([1-9]|1[0-9]|20)\b", text, flags=re.IGNORECASE)
+    # Tenta padrão com indicador de rolagem: d20 [19], tirei 15, rolei 20, deu 18, com 14, dado 12, etc.
+    match = re.search(
+        r"\b(?:d20|tirei|rolei|deu|com|dado|número|numero)\s*[:=]?\s*([1-9]|1[0-9]|20)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
     if match:
         return int(match.group(1))
+
+    # Se a mensagem for simplesmente um número isolado entre 1 e 20 (ex: "19")
+    stripped = text.strip()
+    if stripped.isdigit() and 1 <= int(stripped) <= 20:
+        return int(stripped)
+
     return None
 
 
@@ -131,12 +121,7 @@ async def combat_node(state: GameState) -> dict:
     """Nó determinístico para resolução do combate, turno do monstro e resumo mecânico."""
     logger.info("Executando nó de combate determinístico...")
 
-    last_user_message = ""
-    for msg in reversed(state.recent_messages):
-        if msg.role == "user":
-            last_user_message = msg.content
-            break
-
+    last_user_message = state.get_last_user_message()
     d20 = await extract_d20(last_user_message)
 
     # Garante herói e monstro inicial se estado estiver vazio
@@ -174,15 +159,15 @@ async def combat_node(state: GameState) -> dict:
 
     # 1. Ataque do Herói (Dungeon Master determinístico)
     hero_res = resolve_hero_attack(hero=hero, monster=monster, d20=d20)
-    hit_label = "ACERTO CRÍTICO!" if hero_res.is_critical else ("ACERTOU!" if hero_res.is_hit else "ERROU!")
+    hit_label = "ACERTO CRÍTICO!" if hero_res["is_critical"] else ("ACERTOU!" if hero_res["is_hit"] else "ERROU!")
     damage_label = (
-        f"{hero_res.damage_dealt} ponto." if hero_res.damage_dealt == 1 else f"{hero_res.damage_dealt} pontos."
-    ) if hero_res.is_hit else "Nenhum."
+        f"{hero_res['damage_dealt']} ponto." if hero_res["damage_dealt"] == 1 else f"{hero_res['damage_dealt']} pontos."
+    ) if hero_res["is_hit"] else "Nenhum."
 
     dm_lines = [
         "<b>Dungeon Master:</b>",
         f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name}!",
-        f"• Rolagem: d20 [{hero_res.d20_roll}] + {hero_res.attack_bonus} = {hero_res.total_attack} vs CA {initial_monster_ac} ({hit_label})",
+        f"• Rolagem: d20 [{hero_res['d20_roll']}] + {hero_res['attack_bonus']} = {hero_res['total_attack']} vs CA {initial_monster_ac} ({hit_label})",
         f"• Dano: {damage_label}",
     ]
 
@@ -240,15 +225,15 @@ async def combat_node(state: GameState) -> dict:
             target_hero = max(conscious, key=lambda h: h.hp)
             monster_res = resolve_monster_attack(active_beast, target_hero)
 
-            m_hit_label = "ACERTO CRÍTICO!" if monster_res.is_critical else ("ACERTOU!" if monster_res.is_hit else "ERROU!")
+            m_hit_label = "ACERTO CRÍTICO!" if monster_res["is_critical"] else ("ACERTOU!" if monster_res["is_hit"] else "ERROU!")
             m_damage_label = (
-                f"{monster_res.damage_dealt} ponto." if monster_res.damage_dealt == 1 else f"{monster_res.damage_dealt} pontos."
-            ) if monster_res.is_hit else "Nenhum."
+                f"{monster_res['damage_dealt']} ponto." if monster_res["damage_dealt"] == 1 else f"{monster_res['damage_dealt']} pontos."
+            ) if monster_res["is_hit"] else "Nenhum."
 
             counter_lines = [
                 "<b>Contra-ataque da Fera:</b>",
                 f"• <b>{active_beast.name}</b> atacou <b>{target_hero.name}</b> com {active_beast.attack_name}!",
-                f"• Rolagem: d20 [{monster_res.d20_roll}] + {monster_res.attack_bonus} = {monster_res.total_attack} vs CA {target_hero.ac} ({m_hit_label})",
+                f"• Rolagem: d20 [{monster_res['d20_roll']}] + {monster_res['attack_bonus']} = {monster_res['total_attack']} vs CA {target_hero.ac} ({m_hit_label})",
                 f"• Dano sofrido: {m_damage_label}",
             ]
             if target_hero.is_unconscious:
@@ -297,11 +282,7 @@ async def combat_node(state: GameState) -> dict:
 
 async def npc_node(state: GameState) -> dict:
     """Nó principal de narração e diálogo do NPC Loomis em 1ª pessoa com trava anti-alucinação."""
-    last_user_message = ""
-    for msg in reversed(state.recent_messages):
-        if msg.role == "user":
-            last_user_message = msg.content
-            break
+    last_user_message = state.get_last_user_message()
 
     npc_prompt = (
         state.npcs[0].system_prompt
@@ -367,13 +348,7 @@ async def npc_node(state: GameState) -> dict:
 
 async def route_intent(state: GameState) -> str:
     """Roteia o fluxo entre combate e dica tática chamando a classificação."""
-    last_user_message = ""
-    for msg in reversed(state.recent_messages):
-        if msg.role == "user":
-            last_user_message = msg.content
-            break
-
-    return await classify_intent(last_user_message)
+    return await classify_intent(state.get_last_user_message())
 
 
 def build_turn_graph():

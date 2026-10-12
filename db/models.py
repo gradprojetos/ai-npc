@@ -158,16 +158,3 @@ class NPC(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
-
-# Model aliases
-SessionModel = Session
-HeroModel = Hero
-MonsterModel = Monster
-MessageModel = Message
-NPCModel = NPC
-
-# Backward compatibility aliases
-SessaoJogo = Session
-HeroiSessao = Hero
-MonstroSessao = Monster
-HistoricoMensagens = Message

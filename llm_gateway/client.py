@@ -55,7 +55,7 @@ class LLMClient:
             "model": self.model,
             "temperature": temperature,
             "options": {
-                "num_preditct": max_tokens, # formato do ollama, eh um corte abrupto (teto), e não uma qtd a ser gerada
+                "num_predict": max_tokens,
             },
             "messages": messages,
         }

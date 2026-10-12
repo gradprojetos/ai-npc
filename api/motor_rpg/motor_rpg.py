@@ -10,11 +10,7 @@ from api.schemas.rpg import (
 logger = logging.getLogger(__name__)
 
 
-class AttackResult(dict):
-    """Resultado determinístico de combate (dicionário com acesso a atributos)."""
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
+
 
 # Catálogo oficial dos 5 Heróis de Hesiod
 HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
@@ -215,7 +211,7 @@ def resolve_hero_attack(
     monster: MonsterState,
     d20: int | None = None,
     forced_damage: int | None = None,
-) -> AttackResult:
+) -> dict[str, Any]:
     """Executa a resolução simples e determinística do ataque do herói."""
     d20_roll = d20 if d20 is not None else roll_dice(20)
     bonus = hero.attack_bonus
@@ -236,21 +232,21 @@ def resolve_hero_attack(
         + (f"Dano: {damage} (HP: {hp_before} -> {monster.hp})." if is_hit else "")
     )
 
-    return AttackResult(
-        attacker_name=hero.name,
-        defender_name=monster.name,
-        d20_roll=d20_roll,
-        attack_bonus=bonus,
-        total_attack=total_attack,
-        target_ac=monster.ac,
-        is_hit=is_hit,
-        is_critical=is_critical,
-        damage_dealt=damage,
-        defender_hp_before=hp_before,
-        defender_hp_after=monster.hp,
-        defender_defeated=monster.is_defeated,
-        narrative_summary=narrative.strip(),
-    )
+    return {
+        "attacker_name": hero.name,
+        "defender_name": monster.name,
+        "d20_roll": d20_roll,
+        "attack_bonus": bonus,
+        "total_attack": total_attack,
+        "target_ac": monster.ac,
+        "is_hit": is_hit,
+        "is_critical": is_critical,
+        "damage_dealt": damage,
+        "defender_hp_before": hp_before,
+        "defender_hp_after": monster.hp,
+        "defender_defeated": monster.is_defeated,
+        "narrative_summary": narrative.strip(),
+    }
 
 
 def resolve_monster_attack(
@@ -258,7 +254,7 @@ def resolve_monster_attack(
     hero: HeroState,
     d20: int | None = None,
     forced_damage: int | None = None,
-) -> AttackResult:
+) -> dict[str, Any]:
     """Executa a resolução simples e determinística do ataque do monstro."""
     d20_roll = d20 if d20 is not None else roll_dice(20)
     bonus = monster.attack_bonus
@@ -279,19 +275,19 @@ def resolve_monster_attack(
         + (f"Dano: {damage} (HP: {hp_before} -> {hero.hp})." if is_hit else "")
     )
 
-    return AttackResult(
-        attacker_name=monster.name,
-        defender_name=hero.name,
-        d20_roll=d20_roll,
-        attack_bonus=bonus,
-        total_attack=total_attack,
-        target_ac=hero.ac,
-        is_hit=is_hit,
-        is_critical=is_critical,
-        damage_dealt=damage,
-        defender_hp_before=hp_before,
-        defender_hp_after=hero.hp,
-        defender_defeated=hero.is_unconscious,
-        hero_unconscious=hero.is_unconscious,
-        narrative_summary=narrative.strip(),
-    )
+    return {
+        "attacker_name": monster.name,
+        "defender_name": hero.name,
+        "d20_roll": d20_roll,
+        "attack_bonus": bonus,
+        "total_attack": total_attack,
+        "target_ac": hero.ac,
+        "is_hit": is_hit,
+        "is_critical": is_critical,
+        "damage_dealt": damage,
+        "defender_hp_before": hp_before,
+        "defender_hp_after": hero.hp,
+        "defender_defeated": hero.is_unconscious,
+        "hero_unconscious": hero.is_unconscious,
+        "narrative_summary": narrative.strip(),
+    }
