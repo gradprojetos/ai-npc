@@ -5,36 +5,15 @@ from api.ai_core.turn_graph import (
     combat_node,
     npc_node,
     tactical_advice_node,
-    clean_loomis_speech,
     format_heroes_hud,
     DEFAULT_LOOMIS_PROMPT,
 )
 from telegram_bot.telegram_service import format_to_telegram_html
 
 
-def test_clean_loomis_speech_removes_third_person_rubrics():
-    """Passo 4: Garante que rubricas narrativas em 3ª pessoa e prefixos indesejados são expurgados."""
-    raw = 'Loomis: *loomis cospe no chão* "Bom golpe, recruta! *ele sorri com orgulho* Não baixe a guarda!"'
-    cleaned = clean_loomis_speech(raw)
-    assert "loomis cospe" not in cleaned.lower()
-    assert "ele sorri" not in cleaned.lower()
-    assert "Loomis:" not in cleaned
-    assert "Bom golpe, recruta!" in cleaned
-    assert "Não baixe a guarda!" in cleaned
-
-
-def test_clean_loomis_speech_converts_markdown_to_html():
-    """Passo 4: Garante que markdown remanescente vira tags HTML do Telegram sem aspas duplicadas."""
-    raw = '🗣️ **Loomis**: Excelente investida! Use **Espada Larga** e role `d20`.'
-    cleaned = clean_loomis_speech(raw)
-    assert "**" not in cleaned
-    assert "<b>Espada Larga</b>" in cleaned
-    assert "<code>d20</code>" in cleaned
-
-
 @pytest.mark.asyncio
-async def test_passo_3_combat_hud_hit_and_counter_attack():
-    """Passo 3: Template fixo de combate com acerto, contra-ataque e HUD da arena."""
+async def test_passo_3_combat_summary_hit_and_counter_attack():
+    """Passo 3: Template fixo de combate com acerto, contra-ataque e estado da arena."""
     hero = HeroState(
         player_id="p1",
         name="Jorick",
@@ -66,23 +45,23 @@ async def test_passo_3_combat_hud_hit_and_counter_attack():
     with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=19)):
         res = await combat_node(state)
 
-    hud = res["combat_hud"]
-    assert "🎲 <b>Dungeon Master:</b>" in hud
-    assert "• <b>Jorick</b> atacou <b>Bullette Faminto</b> com Espada Larga!" in hud
-    assert "• Rolagem: d20 [19] + 4 = 23 vs CA 15 (ACERTOU!)" in hud
-    assert "• Dano: 1 ponto." in hud
+    summary = res["last_context"]
+    assert "<b>Dungeon Master:</b>" in summary
+    assert "• <b>Jorick</b> atacou <b>Bullette Faminto</b> com Espada Larga!" in summary
+    assert "• Rolagem: d20 [19] + 4 = 23 vs CA 15 (ACERTOU!)" in summary
+    assert "• Dano: 1 ponto." in summary
 
-    assert "⚔️ <b>Contra-ataque da Fera:</b>" in hud
-    assert "• <b>Bullette Faminto</b> atacou <b>Jorick</b> com Escavar e Engolir!" in hud
+    assert "<b>Contra-ataque da Fera:</b>" in summary
+    assert "• <b>Bullette Faminto</b> atacou <b>Jorick</b> com Escavar e Engolir!" in summary
 
-    assert "📊 <b>Arena de Hesiod:</b>" in hud
-    assert "Bullette Faminto" in hud
-    assert "Jorick" in hud
-    assert "• Status: <i>Fera ferida e furiosa na arena!</i>" in hud
+    assert "<b>Arena de Hesiod:</b>" in summary
+    assert "Bullette Faminto" in summary
+    assert "Jorick" in summary
+    assert "• Status: <i>Fera ferida e furiosa na arena!</i>" in summary
 
 
 @pytest.mark.asyncio
-async def test_passo_3_combat_hud_missing_d20():
+async def test_passo_3_combat_missing_d20():
     """Passo 3: Quando o d20 não é informado, Dungeon Master orienta a rolagem física."""
     hero = HeroState(
         player_id="p1",
@@ -111,17 +90,17 @@ async def test_passo_3_combat_hud_missing_d20():
     with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=None)):
         res = await combat_node(state)
 
-    hud = res["combat_hud"]
-    assert "🎲 <b>Dungeon Master:</b>" in hud
-    assert "nenhuma rolagem de dado foi informada" in hud
-    assert "<b>d20 físico</b>" in hud
-    assert "📊 <b>Arena de Hesiod:</b>" in hud
-    assert "Aguardando rolagem física do d20..." in hud
-    assert "[PENDENTE D20]" in res["last_context"]
+    summary = res["last_context"]
+    assert "<b>Dungeon Master:</b>" in summary
+    assert "nenhuma rolagem de dado foi informada" in summary
+    assert "<b>d20 físico</b>" in summary
+    assert "<b>Arena de Hesiod:</b>" in summary
+    assert "Aguardando rolagem física do d20..." in summary
+    assert "[PENDENTE D20]" in summary
 
 
 @pytest.mark.asyncio
-async def test_passo_3_combat_hud_monster_defeated_omits_counter_attack():
+async def test_passo_3_combat_monster_defeated_omits_counter_attack():
     """Passo 3: Quando a fera morre, não há contra-ataque e a vitória/próxima jaula é reportada."""
     hero = HeroState(
         player_id="p1",
@@ -152,12 +131,11 @@ async def test_passo_3_combat_hud_monster_defeated_omits_counter_attack():
     with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=15)):
         res = await combat_node(state)
 
-    hud = res["combat_hud"]
-    assert "<b>Bullette Faminto</b> foi derrotado!" in hud
+    summary = res["last_context"]
+    assert "<b>Bullette Faminto</b> foi derrotado!" in summary
     # Monstro derrotado não contra-ataca
-    assert "⚔️ <b>Contra-ataque da Fera:</b>" not in hud
-    assert "[MONSTRO DERROTADO]" in hud
-    assert "[MONSTRO DERROTADO]" in res["last_context"]
+    assert "<b>Contra-ataque da Fera:</b>" not in summary
+    assert "[MONSTRO DERROTADO]" in summary
 
 
 @pytest.mark.asyncio
@@ -174,8 +152,7 @@ async def test_passo_4_npc_node_persona_and_anti_hallucination():
     state = GameState(
         session_id="test_session",
         players=[hero],
-        combat_hud="🎲 <b>Dungeon Master:</b>\n• Teste de combate\n\n📊 <b>Arena de Hesiod:</b>\n• Fera ativa",
-        last_context="Fatos do Turno: A fera continua VIVA e ameaçadora (HP: 6/8)!",
+        last_context="<b>Dungeon Master:</b>\n• Teste de combate\n\n<b>Arena de Hesiod:</b>\n• Fera ativa",
         recent_messages=[
             Message(sender="Jogador", content="ataco com 19", role="user")
         ],
@@ -186,30 +163,27 @@ async def test_passo_4_npc_node_persona_and_anti_hallucination():
     async def mock_generate_reply(message, system_prompt, **kwargs):
         captured_prompt["system_prompt"] = system_prompt
         captured_prompt["message"] = message
-        return '*loomis cospe no chão* "Excelente golpe! A carapaça dele ainda é dura, continue atacando!"'
+        return '"Excelente golpe! A carapaça dele ainda é dura, continue atacando!"'
 
     with patch("api.ai_core.turn_graph.llm_client.generate_reply", side_effect=mock_generate_reply):
         res = await npc_node(state)
 
-    # Verifica trava rígida no system prompt
     sys_prompt = captured_prompt["system_prompt"]
-    assert "[REGRAS INQUEBRÁVEIS DE SEGURANÇA E PERSONA - LOOMIS]" in sys_prompt
+    assert "[REGRAS DE PERSONA - LOOMIS]" in sys_prompt
     assert "Você NUNCA decide se um monstro morreu" in sys_prompt
     assert "[MONSTRO DERROTADO]" in sys_prompt
-    assert "terminantemente PROIBIDO gerar rubricas narrativas em 3ª pessoa" in sys_prompt
 
     # Verifica mensagem final gerada para o Telegram
     final_message = res["recent_messages"][-1].content
-    assert "🎲 <b>Dungeon Master:</b>" in final_message
-    assert "📊 <b>Arena de Hesiod:</b>" in final_message
-    assert "🗣️ <b>Loomis:</b>" in final_message
+    assert "<b>Dungeon Master:</b>" in final_message
+    assert "<b>Arena de Hesiod:</b>" in final_message
+    assert "<b>Loomis:</b>" in final_message
     assert '"Excelente golpe! A carapaça dele ainda é dura, continue atacando!"' in final_message
-    assert "loomis cospe" not in final_message
 
 
 def test_telegram_html_formatting():
     """Verifica conversão de markdown e proteção de tags HTML válidas."""
-    raw = "🎲 **Dungeon Master:**\n• *Ataque* com 1 < 3 & `d20`."
+    raw = "**Dungeon Master:**\n• *Ataque* com 1 < 3 & `d20`."
     formatted = format_to_telegram_html(raw)
     assert "<b>Dungeon Master:</b>" in formatted
     assert "<i>Ataque</i>" in formatted
@@ -263,12 +237,12 @@ async def test_end_to_end_turn_graph_combat():
 
     final_state = GameState(**result) if isinstance(result, dict) else result
     last_msg = final_state.recent_messages[-1].content
-    assert "🎲 <b>Dungeon Master:</b>" in last_msg
+    assert "<b>Dungeon Master:</b>" in last_msg
     assert "• <b>Jorick</b> atacou <b>Bullette Faminto</b> com Espada Larga!" in last_msg
     assert "• Rolagem: d20 [19] + 4 = 23 vs CA 15 (ACERTOU!)" in last_msg
-    assert "⚔️ <b>Contra-ataque da Fera:</b>" in last_msg
-    assert "📊 <b>Arena de Hesiod:</b>" in last_msg
-    assert "🗣️ <b>Loomis:</b>" in last_msg
+    assert "<b>Contra-ataque da Fera:</b>" in last_msg
+    assert "<b>Arena de Hesiod:</b>" in last_msg
+    assert "<b>Loomis:</b>" in last_msg
     assert '"Firme o passo, recruta! Bom impacto na carapaça!"' in last_msg
 
 
@@ -312,8 +286,8 @@ async def test_end_to_end_turn_graph_tactical_advice():
     final_state = GameState(**result) if isinstance(result, dict) else result
     last_msg = final_state.recent_messages[-1].content
     # Em dica tática não deve ter bloco de ataque ou rolagem mecânica
-    assert "🎲 <b>Dungeon Master:</b>" not in last_msg
-    assert "⚔️ <b>Contra-ataque da Fera:</b>" not in last_msg
-    assert "🗣️ <b>Loomis:</b>" in last_msg
+    assert "<b>Dungeon Master:</b>" not in last_msg
+    assert "<b>Contra-ataque da Fera:</b>" not in last_msg
+    assert "<b>Loomis:</b>" in last_msg
     assert '"Mire na barriga! A carapaça superior resiste a quase tudo, mas o ventre é vulnerável!"' in last_msg
 

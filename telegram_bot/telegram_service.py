@@ -135,12 +135,12 @@ class TelegramService:
         if not update.message:
             return
         help_text = (
-            "⚔️ <b>Arena de Treinamento de Hesiod — Regras & Comandos</b>\n\n"
+            "<b>Arena de Treinamento de Hesiod — Regras & Comandos</b>\n\n"
             "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! Aqui você aprende a enfrentar feras reais antes de sair para o mundo.\n\n"
-            "📋 <b>Comandos do Jogo:</b>\n"
+            "<b>Comandos do Jogo:</b>\n"
             "• <code>/ajuda</code> - Exibe estas instruções e regras da arena.\n"
             "• <code>/reset</code> - Reinicia a sessão da arena (restaura a Jaula 1 e todos os heróis).\n\n"
-            "🎲 <b>Como Jogar:</b>\n"
+            "<b>Como Jogar:</b>\n"
             "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i> ou <i>\"golpeio a fera tirei 15\"</i>).\n"
             "• <b>Conselho Tático:</b> Peça dicas ou pergunte sobre as fraquezas da fera na jaula (Ação Livre, não gasta turno).\n"
             "• <b>No Grupo:</b> Comandos funcionam sempre. Falas abertas de RPG são respondidas pela arena, mas conversas entre jogadores com reply ou menção @ são ignoradas pela IA."

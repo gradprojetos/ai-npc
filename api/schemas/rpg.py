@@ -79,7 +79,6 @@ class GameState(BaseModel):
     last_context: str | None = None
     recent_messages: list[Message] = Field(default_factory=list)
     is_victory: bool = False
-    combat_hud: str | None = None
 
     def rotate_players(self) -> HeroState | None:
         """Rotaciona a fila de iniciativa: o jogador ativo vai para o fim da fila."""

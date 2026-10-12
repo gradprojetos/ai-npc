@@ -29,32 +29,6 @@ def format_heroes_hud(players: list) -> str:
     )
 
 
-def clean_loomis_speech(text: str) -> str:
-    """Sanitiza a fala de Loomis, expurgando rubricas em 3ª pessoa e prefixos indesejados."""
-    if not text:
-        return "Loomis observa com firmeza, avaliando seu próximo movimento."
-
-    cleaned = text.strip()
-    # 1. Remove prefixos como "Loomis:", "🗣️ Loomis:", "**Loomis:**", "<b>Loomis:</b>", etc.
-    cleaned = re.sub(r"^(?:🗣️\s*)?(?:\*\*|<b>)?\s*loomis\s*(?:\*\*|</b>)?\s*:\s*", "", cleaned, flags=re.IGNORECASE)
-
-    # 2. Expurga rubricas narrativas em 3ª pessoa entre asteriscos ou parênteses
-    cleaned = re.sub(r"\*[^*]*(?:loomis|cospe|sorri|olha|cruza|bate|move|grita|ri|acena|aponta|guincho|abaixa)[^*]*\*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\([^)]*(?:loomis|cospe|sorri|olha|cruza|bate|move|grita|ri|acena|aponta|guincho|abaixa)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
-
-    # 3. Converte Markdown remanescente para tags HTML aceitas pelo Telegram
-    cleaned = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", cleaned)
-    cleaned = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", cleaned)
-    cleaned = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", cleaned)
-
-    # 4. Remove espaços extras e aspas externas
-    cleaned = cleaned.strip()
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith('“') and cleaned.endswith('”')):
-        cleaned = cleaned[1:-1].strip()
-
-    return cleaned or "Mantenham o foco no combate, recrutas!"
-
 
 async def extract_d20(text: str) -> int | None:
     """Extrai a rolagem física de um d20 (1 a 20) informada pelo jogador via LLM ou regex."""
@@ -81,7 +55,7 @@ async def extract_d20(text: str) -> int | None:
     except Exception as e:
         logger.warning(f"Falha ao extrair d20 via LLM: {e}")
 
-    # Fallback determinístico por regex
+    # Fallback simples por regex
     match = re.search(r"(?:d20\s*[:=]?\s*|tirei\s+|rolei\s+|com\s+|deu\s+)?\b([1-9]|1[0-9]|20)\b", text, flags=re.IGNORECASE)
     if match:
         return int(match.group(1))
@@ -111,14 +85,7 @@ async def classify_intent(text: str) -> str:
             return "combat"
         return "tactical_advice"
     except Exception as e:
-        logger.warning(f"Falha ao classificar intenção via LLM ({e}), direcionando para tactical_advice.")
-        combat_keywords = [
-            "atacar", "ataque", "ataco", "golpe", "golpear", "golpeio",
-            "bater", "bato", "espada", "magia", "flecha", "machado",
-            "lutar", "investida", "d20", "rolei", "tirei", "dado"
-        ]
-        if any(kw in text.lower() for kw in combat_keywords):
-            return "combat"
+        logger.warning(f"Falha ao classificar intenção via LLM ({e}), adotando tactical_advice.")
         return "tactical_advice"
 
 
@@ -155,15 +122,13 @@ def tactical_advice_node(state: GameState) -> dict:
 
     last_context = "\n".join(context_parts)
     state.last_context = last_context
-    state.combat_hud = None
     return {
         "last_context": last_context,
-        "combat_hud": None,
     }
 
 
 async def combat_node(state: GameState) -> dict:
-    """Nó determinístico para resolução do combate, turno do monstro e montagem do HUD do Dungeon Master."""
+    """Nó determinístico para resolução do combate, turno do monstro e resumo mecânico."""
     logger.info("Executando nó de combate determinístico...")
 
     last_user_message = ""
@@ -183,29 +148,24 @@ async def combat_node(state: GameState) -> dict:
     hero = state.players[0]
     monster = state.monsters[0]
 
-    # Se o d20 não foi informado: sinaliza para Loomis solicitar a rolagem física com HUD informativo
+    # Se o d20 não foi informado: sinaliza para Loomis solicitar a rolagem física
     if d20 is None:
-        hud_lines = [
-            "🎲 <b>Dungeon Master:</b>",
+        lines = [
+            "<b>Dungeon Master:</b>",
             f"• <b>{hero.name}</b> preparou um ataque, mas nenhuma rolagem de dado foi informada!",
             "• Jogue seu <b>d20 físico</b> na mesa e declare o valor tirado (ex: <i>\"ataco com 17\"</i>).",
             "",
-            "📊 <b>Arena de Hesiod:</b>",
+            "<b>Arena de Hesiod:</b>",
             f"• Monstro: <b>{monster.name}</b> (Jaula {monster.cage_number}) [HP: {monster.hp}/{monster.max_hp} | CA: {monster.ac}]",
             f"• Heróis: {format_heroes_hud(state.players)}",
-            "• Status: <i>Aguardando rolagem física do d20...</i>",
+            "• Status: <i>[PENDENTE D20] Aguardando rolagem física do d20...</i>",
         ]
-        combat_hud = "\n".join(hud_lines)
-        state.combat_hud = combat_hud
-        state.last_context = (
-            f"[PENDENTE D20]\n"
-            f"O recruta {hero.name} tentou atacar, mas NÃO informou o valor do d20 físico tirado na mesa!\n"
-            f"Instrução para Loomis: Cobre com autoridade, energia e firmeza que o recruta jogue seu d20 físico "
-            f"e diga quanto tirou para poder atingir a fera."
-        )
+        state.last_context = "\n".join(lines)
         return {
             "last_context": state.last_context,
-            "combat_hud": combat_hud,
+            "players": state.players,
+            "monsters": state.monsters,
+            "recent_messages": state.recent_messages,
         }
 
     initial_monster_name = monster.name
@@ -220,7 +180,7 @@ async def combat_node(state: GameState) -> dict:
     ) if hero_res.is_hit else "Nenhum."
 
     dm_lines = [
-        "🎲 <b>Dungeon Master:</b>",
+        "<b>Dungeon Master:</b>",
         f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name}!",
         f"• Rolagem: d20 [{hero_res.d20_roll}] + {hero_res.attack_bonus} = {hero_res.total_attack} vs CA {initial_monster_ac} ({hit_label})",
         f"• Dano: {damage_label}",
@@ -272,7 +232,6 @@ async def combat_node(state: GameState) -> dict:
 
     # 4. Contra-ataque da Fera (executado apenas se a fera atacada sobreviver e o combate continuar)
     counter_lines = []
-    counter_attack_info = None
     if not monster_defeated_this_turn and state.monsters and not state.monsters[0].is_defeated and not state.is_victory:
         active_beast = state.monsters[0]
         conscious = [h for h in state.players if not h.is_unconscious]
@@ -280,7 +239,6 @@ async def combat_node(state: GameState) -> dict:
             # Monstro mira no herói consciente com maior HP
             target_hero = max(conscious, key=lambda h: h.hp)
             monster_res = resolve_monster_attack(active_beast, target_hero)
-            counter_attack_info = (active_beast, target_hero, monster_res)
 
             m_hit_label = "ACERTO CRÍTICO!" if monster_res.is_critical else ("ACERTOU!" if monster_res.is_hit else "ERROU!")
             m_damage_label = (
@@ -288,7 +246,7 @@ async def combat_node(state: GameState) -> dict:
             ) if monster_res.is_hit else "Nenhum."
 
             counter_lines = [
-                "⚔️ <b>Contra-ataque da Fera:</b>",
+                "<b>Contra-ataque da Fera:</b>",
                 f"• <b>{active_beast.name}</b> atacou <b>{target_hero.name}</b> com {active_beast.attack_name}!",
                 f"• Rolagem: d20 [{monster_res.d20_roll}] + {monster_res.attack_bonus} = {monster_res.total_attack} vs CA {target_hero.ac} ({m_hit_label})",
                 f"• Dano sofrido: {m_damage_label}",
@@ -299,8 +257,8 @@ async def combat_node(state: GameState) -> dict:
     # 5. Rotaciona a iniciativa dos heróis
     state.rotate_players()
 
-    # 6. Montagem do HUD da Arena de Hesiod
-    arena_lines = ["📊 <b>Arena de Hesiod:</b>"]
+    # 6. Resumo da Arena de Hesiod
+    arena_lines = ["<b>Arena de Hesiod:</b>"]
     if state.is_victory:
         arena_lines.append("• Monstro: <i>Nenhum (Todas as 4 jaulas superadas!)</i>")
         arena_lines.append(f"• Heróis: {format_heroes_hud(state.players)}")
@@ -320,38 +278,14 @@ async def combat_node(state: GameState) -> dict:
         else:
             arena_lines.append("• Status: <i>Fera ilesa e pronta para o combate!</i>")
 
-    # Monta os blocos determinísticos do HUD completo (Passo 3)
-    hud_sections = ["\n".join(dm_lines)]
+    sections = ["\n".join(dm_lines)]
     if counter_lines:
-        hud_sections.append("\n".join(counter_lines))
-    hud_sections.append("\n".join(arena_lines))
-    combat_hud = "\n\n".join(hud_sections)
-    state.combat_hud = combat_hud
-
-    # Fatos inquestionáveis para Loomis reagir sem alucinar (Passo 4)
-    curr_beast = state.monsters[0] if state.monsters else None
-    context_lines = [
-        "Fatos Mecânicos do Turno (Dungeon Master):",
-        f"- {hero.name} atacou {initial_monster_name}: d20 [{hero_res.d20_roll}] + {hero_res.attack_bonus} = {hero_res.total_attack} vs CA {initial_monster_ac} ({hit_label}). Dano causado: {hero_res.damage_dealt}.",
-    ]
-    if counter_attack_info:
-        ab, th, mr = counter_attack_info
-        context_lines.append(f"- Contra-ataque de {ab.name} em {th.name}: {m_hit_label}, causou {mr.damage_dealt} de dano.")
-    if state.is_victory:
-        context_lines.append("- [MONSTRO DERROTADO] [VITÓRIA] Todas as 4 jaulas foram superadas! Os recrutas são Heróis de Hesiod!")
-    elif monster_defeated_this_turn:
-        context_lines.append(f"- [MONSTRO DERROTADO] {initial_monster_name} foi derrotado!")
-        if curr_beast:
-            context_lines.append(f"- Nova fera na arena: {curr_beast.name} (Jaula {curr_beast.cage_number}) [HP: {curr_beast.hp}/{curr_beast.max_hp}].")
-    else:
-        if curr_beast:
-            context_lines.append(f"- A fera {curr_beast.name} continua VIVA e ameaçadora (HP: {curr_beast.hp}/{curr_beast.max_hp})!")
-
-    state.last_context = "\n".join(context_lines)
+        sections.append("\n".join(counter_lines))
+    sections.append("\n".join(arena_lines))
+    state.last_context = "\n\n".join(sections)
 
     return {
         "last_context": state.last_context,
-        "combat_hud": combat_hud,
         "players": state.players,
         "monsters": state.monsters,
         "is_victory": state.is_victory,
@@ -360,7 +294,7 @@ async def combat_node(state: GameState) -> dict:
 
 
 async def npc_node(state: GameState) -> dict:
-    """Nó principal de narração e diálogo do NPC Loomis com trava anti-alucinação e persona em 1ª pessoa (Passo 4)."""
+    """Nó principal de narração e diálogo do NPC Loomis em 1ª pessoa com trava anti-alucinação."""
     last_user_message = ""
     for msg in reversed(state.recent_messages):
         if msg.role == "user":
@@ -374,13 +308,12 @@ async def npc_node(state: GameState) -> dict:
     )
 
     format_instructions = (
-        "\n\n[REGRAS INQUEBRÁVEIS DE SEGURANÇA E PERSONA - LOOMIS]:\n"
+        "\n\n[REGRAS DE PERSONA - LOOMIS]:\n"
         "1. Você é APENAS o treinador Loomis. Você NUNCA decide se um monstro morreu ou sofreu dano. Toda a verdade mecânica pertence exclusivamente ao Dungeon Master.\n"
         "2. Você só comemora a derrota de uma fera se o contexto contiver expressamente '[MONSTRO DERROTADO]'. Se a fera tiver HP > 0, reaja a ela ainda viva e ameaçadora!\n"
-        "3. Fale SEMPRE e estritamente em PRIMEIRA PESSOA como Loomis, de forma concisa (1 a 3 frases enérgicas), direta e protetora.\n"
-        "4. É terminantemente PROIBIDO gerar rubricas narrativas em 3ª pessoa (como '*loomis cospe no chão*', '*ele sorri*', '*solta um guincho*'). Responda apenas com a fala que sai da sua boca.\n"
-        "5. NUNCA inclua prefixos como 'Loomis:' ou 'Dungeon Master:' na resposta.\n"
-        "6. Formate seu texto com tags HTML aceitas pelo Telegram (<b>negrito</b>, <i>itálico</i>). NUNCA use Markdown (como **, *, _, ###)."
+        "3. Fale SEMPRE em PRIMEIRA PESSOA como Loomis, de forma concisa (1 a 3 frases enérgicas), direta e protetora.\n"
+        "4. Responda apenas com a sua fala direta, sem rubricas narrativas entre asteriscos e sem prefixos como 'Loomis:'.\n"
+        "5. Formate seu texto com tags HTML aceitas pelo Telegram (<b>negrito</b>, <i>itálico</i>). NUNCA use Markdown."
     )
     effective_system_prompt = (npc_prompt + format_instructions).strip()
 
@@ -404,19 +337,16 @@ async def npc_node(state: GameState) -> dict:
             resposta_texto = "A fera caiu! Excelente golpe, recrutas! Mas mantenham o foco que a próxima jaula está à frente!"
         elif "[PENDENTE D20]" in (state.last_context or ""):
             resposta_texto = "De nada adianta empunhar a arma sem rolar os dados! Jogue seu d20 na mesa e me diga quanto tirou!"
-        elif state.combat_hud:
-            resposta_texto = "Bom golpe, garoto! Mas não baixe a guarda, essa carapaça de pedra ainda tem muita luta pela frente!"
         else:
             resposta_texto = "Fiquem atentos às fraquezas da fera e mantenham a formação! Hesiod conta com a coragem de vocês!"
 
-    # Sanitização rígida de Persona (Passo 4)
-    cleaned_speech = clean_loomis_speech(resposta_texto)
+    speech = resposta_texto.strip()
 
-    # Composição do turno completo com HUD mecânico (Passo 3) e voz do NPC (Passo 4)
-    if state.combat_hud:
-        final_content = f"{state.combat_hud}\n\n🗣️ <b>Loomis:</b>\n\"{cleaned_speech}\""
+    # Compõe mensagem final com bloco do Dungeon Master se for combate
+    if state.last_context and "Dungeon Master:" in state.last_context:
+        final_content = f"{state.last_context}\n\n<b>Loomis:</b>\n\"{speech}\""
     else:
-        final_content = f"🗣️ <b>Loomis:</b>\n\"{cleaned_speech}\""
+        final_content = f"<b>Loomis:</b>\n\"{speech}\""
 
     npc_message = Message(
         sender="Loomis",
@@ -430,7 +360,6 @@ async def npc_node(state: GameState) -> dict:
     return {
         "recent_messages": state.recent_messages,
         "last_context": state.last_context,
-        "combat_hud": state.combat_hud,
     }
 
 
