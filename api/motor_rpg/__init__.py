@@ -9,7 +9,6 @@ from api.motor_rpg.motor_rpg import (
 )
 from api.motor_rpg.session_service import (
     create_initial_rpg_state,
-    add_or_update_player,
     get_or_create_session_state,
     persist_session_state_to_db,
     reset_player_session,
@@ -24,7 +23,6 @@ __all__ = [
     "resolve_hero_attack",
     "resolve_monster_attack",
     "create_initial_rpg_state",
-    "add_or_update_player",
     "get_or_create_session_state",
     "persist_session_state_to_db",
     "reset_player_session",

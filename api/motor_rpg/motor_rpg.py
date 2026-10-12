@@ -132,13 +132,7 @@ HERO_CARDS: dict[int, str] = {
     5: "bet",
 }
 
-CARD_BY_NAME: dict[str, int] = {
-    "evindol": 1,
-    "raen": 2,
-    "jorick": 3,
-    "yarrow": 4,
-    "bet": 5,
-}
+CARD_BY_NAME: dict[str, int] = {v: k for k, v in HERO_CARDS.items()}
 
 
 def get_hero_card_number(name: str) -> int:
@@ -225,13 +219,6 @@ def resolve_hero_attack(
         damage = (forced_damage if forced_damage is not None else roll_dice(6)) if is_critical else 1
         monster.take_damage(damage)
 
-    narrative = (
-        f"{hero.name} atacou {monster.name} com {hero.attack_name} "
-        f"(d20={d20_roll} + bônus={bonus} = {total_attack} vs CA {monster.ac}). "
-        f"{'ACERTOU!' if is_hit else 'ERROU!'} "
-        + (f"Dano: {damage} (HP: {hp_before} -> {monster.hp})." if is_hit else "")
-    )
-
     return {
         "attacker_name": hero.name,
         "defender_name": monster.name,
@@ -245,7 +232,6 @@ def resolve_hero_attack(
         "defender_hp_before": hp_before,
         "defender_hp_after": monster.hp,
         "defender_defeated": monster.is_defeated,
-        "narrative_summary": narrative.strip(),
     }
 
 
@@ -268,13 +254,6 @@ def resolve_monster_attack(
         damage = (forced_damage if forced_damage is not None else roll_dice(6)) if is_critical else 1
         hero.take_damage(damage)
 
-    narrative = (
-        f"{monster.name} atacou {hero.name} com {monster.attack_name} "
-        f"(d20={d20_roll} + bônus={bonus} = {total_attack} vs CA {hero.ac}). "
-        f"{'ACERTOU!' if is_hit else 'ERROU!'} "
-        + (f"Dano: {damage} (HP: {hp_before} -> {hero.hp})." if is_hit else "")
-    )
-
     return {
         "attacker_name": monster.name,
         "defender_name": hero.name,
@@ -289,5 +268,4 @@ def resolve_monster_attack(
         "defender_hp_after": hero.hp,
         "defender_defeated": hero.is_unconscious,
         "hero_unconscious": hero.is_unconscious,
-        "narrative_summary": narrative.strip(),
     }

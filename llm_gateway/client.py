@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 # valores padrao para comunicacao com o servico llm
 DEFAULT_LLM_URL = "https://llm.ic.unicamp.br/api/chat/completions"
 DEFAULT_LLM_MODEL = "gemma4:e4b"
-DEFAULT_REQUEST_TIMEOUT = 60.0
+DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_MAX_TOKENS = 200
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "60"))
 
 
 class LLMClient:

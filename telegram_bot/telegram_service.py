@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Callable, Awaitable, Any
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ async def _invoke_callback(callback: Callable, *args, **kwargs) -> Any:
 
 
 class TelegramService:
+    _invoke_callback = staticmethod(_invoke_callback)
+
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
@@ -145,15 +148,25 @@ class TelegramService:
         """Apresenta a Arena de Hesiod e recruta os jogadores com as 5 cartas canônicas."""
         if not update.message:
             return
+
+        chat = update.effective_chat
+        user = update.effective_user
+        logger.info(f"Comando /start recebido de user_id={user.id if user else None} ({user.first_name if user else None}) no chat_id={chat.id if chat else None}")
+
         cards_text = (
             "<b>Arena de Treinamento de Hesiod</b>\n\n"
             "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! "
             "Antes de abrirmos as jaulas, cada recruta deve escolher sua carta:\n\n"
             "• <code>/select 1</code> - <b>Evindol</b> (Ladino Humano | CA 11 | HP 3 | Ataque +6)\n"
+            "  ↳ <i>Poder: Ataque Furtivo (dano dobrado se flanquear)</i>\n"
             "• <code>/select 2</code> - <b>Raen</b> (Bárbara Anã | CA 9 | HP 7 | Ataque +5)\n"
+            "  ↳ <i>Poder: Guerreira Feroz (empurra o monstro 2 casas ao ser atingida)</i>\n"
             "• <code>/select 3</code> - <b>Jorick</b> (Guerreiro Humano | CA 13 | HP 5 | Ataque +4)\n"
+            "  ↳ <i>Poder: Investida (+2 no ataque ao começar longe da fera)</i>\n"
             "• <code>/select 4</code> - <b>Yarrow</b> (Xamã Meio-Orc | CA 10 | HP 6 | Ataque +3)\n"
-            "• <code>/select 5</code> - <b>Bet</b> (Maga Elfa | CA 7 | HP 4 | Ataque +7)\n\n"
+            "  ↳ <i>Poder: Espírito da Floresta (cura ou suporte aos aliados)</i>\n"
+            "• <code>/select 5</code> - <b>Bet</b> (Maga Elfa | CA 7 | HP 4 | Ataque +7)\n"
+            "  ↳ <i>Poder: Onda Explosiva (dano em área atingindo criaturas adjacentes)</i>\n\n"
             "Digite <code>/select &lt;1-5&gt;</code> para alistar seu herói. Quando todos estiverem prontos, use <code>/done</code> para iniciar a luta!"
         )
         try:
@@ -180,11 +193,13 @@ class TelegramService:
             return
 
         choice = args[0]
+        logger.info(f"Comando /select {choice} de user_id={user.id} ({player_name}) para session={session_id}")
         if self.on_select_callback:
             try:
                 success, reply_msg, _ = await self._invoke_callback(
                     self.on_select_callback, session_id, str(user.id), player_name, choice
                 )
+                logger.info(f"Resultado /select: success={success}, msg={reply_msg[:60]}...")
             except Exception as e:
                 logger.error(f"Erro ao selecionar herói: {e}", exc_info=True)
                 reply_msg = "Ocorreu um erro ao selecionar o herói."
@@ -204,10 +219,12 @@ class TelegramService:
         chat = update.effective_chat
         user = update.effective_user
         session_id = str(chat.id if chat else user.id)
+        logger.info(f"Comando /done recebido de user_id={user.id} para session={session_id}")
 
         if self.on_done_callback:
             try:
                 success, reply_msg, _ = await self._invoke_callback(self.on_done_callback, session_id)
+                logger.info(f"Resultado /done: success={success}, msg={reply_msg[:60]}...")
             except Exception as e:
                 logger.error(f"Erro ao finalizar recrutamento: {e}", exc_info=True)
                 reply_msg = "Ocorreu um erro ao iniciar a partida."
@@ -231,7 +248,7 @@ class TelegramService:
             "• <code>/select &lt;1-5&gt;</code> - Escolhe sua carta para o combate.\n"
             "• <code>/done</code> - Encerra o recrutamento e inicia a luta na Jaula 1.\n"
             "• <code>/reset</code> - Reinicia a sessão e permite novo recrutamento.\n"
-            "• <code>/ajuda</code> - Exibe estas instruções.\n\n"
+            "• <code>/help</code> - Exibe estas instruções.\n\n"
             "<b>Como Jogar:</b>\n"
             "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i>).\n"
             "• <b>Conselho Tático:</b> Peça dicas ou pergunte sobre as fraquezas da fera na jaula (Ação Livre, não gasta turno).\n"
@@ -323,7 +340,14 @@ class TelegramService:
         formatted_reply = format_to_telegram_html(reply_text)
         try:
             await update.message.reply_text(formatted_reply, parse_mode="HTML")
-        except Exception as e:
-            logger.warning(f"Erro ao enviar resposta com parse_mode=HTML: {e}. Enviando como texto puro.")
+        except BadRequest as e:
+            logger.warning(f"Erro de formatação HTML do Telegram ({e}). Enviando como texto puro.")
             clean_text = re.sub(r"<[^>]+>", "", reply_text)
             await update.message.reply_text(clean_text)
+        except Exception as e:
+            logger.error(f"Erro ao enviar resposta no Telegram ({e}). Tentando novamente...", exc_info=True)
+            try:
+                await update.message.reply_text(formatted_reply, parse_mode="HTML")
+            except Exception:
+                clean_text = re.sub(r"<[^>]+>", "", reply_text)
+                await update.message.reply_text(clean_text)

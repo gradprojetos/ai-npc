@@ -110,8 +110,13 @@ def select_hero_for_player(
     if existing_idx is not None:
         state.players[existing_idx] = hero
     else:
-        # Se havia apenas o herói genérico inicial sem dono, substitui
-        if len(state.players) == 1 and state.players[0].player_id in ["default", "player_1", ""]:
+        # Se havia apenas o herói genérico inicial sem dono real alistado, substitui
+        dummy_ids = {"default", "player_1", "", str(session_id)}
+        chat_id_int, _ = normalize_session_id(session_id)
+        if chat_id_int is not None:
+            dummy_ids.add(str(chat_id_int))
+
+        if len(state.players) == 1 and (state.players[0].player_id in dummy_ids or "(" not in state.players[0].name):
             state.players[0] = hero
         else:
             state.players.append(hero)
@@ -127,7 +132,8 @@ def select_hero_for_player(
         f"<b>Recruta Alistado!</b>\n"
         f"• Jogador: <b>{player_name}</b>\n"
         f"• Carta #{card_num}: <b>{arch_name}</b> ({hero.class_name})\n"
-        f"• Vida: {hero.hp}/{hero.max_hp} | CA: {hero.ac} | Ataque: +{hero.attack_bonus} ({hero.attack_name})\n\n"
+        f"• Vida: {hero.hp}/{hero.max_hp} | CA: {hero.ac} | Ataque: +{hero.attack_bonus} ({hero.attack_name})\n"
+        f"• Poder Especial: <i>{hero.special_power}</i>\n\n"
         f"<i>Quando todos tiverem escolhido, use <code>/done</code> para iniciar o combate!</i>"
     )
     return True, msg, state
@@ -143,7 +149,11 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
         return False, "Nenhum recruta foi alistado ainda! Usem <code>/select &lt;1-5&gt;</code> antes de <code>/done</code>.", state
 
     state.is_recruiting = False
+    chat_id_int, session_uuid = normalize_session_id(session_id)
     set_memory_session(session_id, state)
+    set_memory_session(str(session_uuid), state)
+    if chat_id_int is not None:
+        set_memory_session(str(chat_id_int), state)
     persist_session_state_to_db(state)
 
     first_hero = state.players[0]
@@ -197,7 +207,16 @@ def get_or_create_session_state(
         except (ValueError, TypeError):
             pass
 
-    # 1. Tenta carregar do banco de dados relacional normalizado
+    # 1. Tenta recuperar da memória primeiro (mantém o estado vivo, como is_recruiting e turnos)
+    cached = (
+        get_memory_session(session_id)
+        or (get_memory_session(str(chat_id_int)) if chat_id_int is not None else None)
+        or get_memory_session(str(session_uuid))
+    )
+    if cached:
+        return cached
+
+    # 2. Tenta carregar do banco de dados relacional normalizado
     try:
         with SessionLocal() as db:
             session_db = None
@@ -263,6 +282,9 @@ def get_or_create_session_state(
                 db_npc = db.query(NPC).filter_by(name="Loomis").first()
                 system_prompt = db_npc.system_prompt if db_npc else ""
 
+                # Se já houver mensagens ou heróis alistados, combate já saiu do recrutamento
+                is_recruiting = len(db_messages) == 0 and len(players) == 0
+
                 state = GameState(
                     session_id=str(session_db.session_id),
                     location=session_db.location,
@@ -271,26 +293,23 @@ def get_or_create_session_state(
                     npcs=[NPCState(name="Loomis", system_prompt=system_prompt)],
                     last_context=None,
                     recent_messages=recent_messages,
+                    is_recruiting=is_recruiting,
                     is_victory=session_db.is_victory,
                 )
                 set_memory_session(session_id, state)
                 set_memory_session(str(session_db.session_id), state)
+                if chat_id_int is not None:
+                    set_memory_session(str(chat_id_int), state)
                 return state
     except Exception as e:
         logger.debug(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
 
-    # 2. Tenta recuperar da memória
-    cached = get_memory_session(session_id)
-    if not cached and str(session_uuid) != session_id:
-        cached = get_memory_session(str(session_uuid))
-    if cached:
-        return cached
-
     # 3. Cria nova sessão inicial
-    player_id = str(user_info.get("player_id") or chat_id_int or "player_1") if user_info else "player_1"
-    archetype = default_archetype or (user_info.get("archetype") if user_info else None) or "Jorick"
+    initial_hero = None
+    if default_archetype:
+        player_id = str(user_info.get("player_id") or chat_id_int or "player_1") if user_info else "player_1"
+        initial_hero = create_hero(default_archetype, player_id=player_id)
 
-    initial_hero = create_hero(archetype, player_id=player_id)
     new_state = create_initial_rpg_state(session_id=session_id, initial_hero=initial_hero)
 
     # Tenta persistir no banco relacional

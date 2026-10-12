@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from dotenv import load_dotenv
@@ -53,7 +54,7 @@ async def telegram_webhook(request: Request):
     """Endpoint público consumido pelo Telegram via HTTP POST."""
     try:
         data = await request.json()
-        await telegram_service.process_update(data)
+        asyncio.create_task(telegram_service.process_update(data))
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
