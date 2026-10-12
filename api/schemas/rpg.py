@@ -78,6 +78,7 @@ class GameState(BaseModel):
 
     last_context: str | None = None
     recent_messages: list[Message] = Field(default_factory=list)
+    is_recruiting: bool = True
     is_victory: bool = False
 
     def rotate_players(self) -> HeroState | None:

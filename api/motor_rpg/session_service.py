@@ -128,9 +128,36 @@ def select_hero_for_player(
         f"• Jogador: <b>{player_name}</b>\n"
         f"• Carta #{card_num}: <b>{arch_name}</b> ({hero.class_name})\n"
         f"• Vida: {hero.hp}/{hero.max_hp} | CA: {hero.ac} | Ataque: +{hero.attack_bonus} ({hero.attack_name})\n\n"
-        f"<i>A ordem dos turnos foi atualizada na Arena.</i>"
+        f"<i>Quando todos tiverem escolhido, use <code>/done</code> para iniciar o combate!</i>"
     )
     return True, msg, state
+
+
+def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState]:
+    """Finaliza a fase de recrutamento (/done) e abre a arena para combate."""
+    state = get_or_create_session_state(session_id)
+    if not state.is_recruiting:
+        return False, "O combate já foi iniciado!", state
+
+    if not state.players:
+        return False, "Nenhum recruta foi alistado ainda! Usem <code>/select &lt;1-5&gt;</code> antes de <code>/done</code>.", state
+
+    state.is_recruiting = False
+    set_memory_session(session_id, state)
+    persist_session_state_to_db(state)
+
+    first_hero = state.players[0]
+    monster = state.monsters[0] if state.monsters else get_cage_monster(1)
+
+    briefing = (
+        "<b>Treinamento Iniciado — Jaula 1 Aberta!</b>\n\n"
+        f"Loomis gira a manivela enferrujada e as grades sobem com um rangido metálico!\n"
+        f"<b>{monster.name}</b> entra na arena rosnando [HP: {monster.hp}/{monster.max_hp} | CA: {monster.ac}].\n\n"
+        f"<b>Ordem de Ação:</b>\n"
+        + "\n".join(f"{i+1}. <b>{p.name}</b> ({p.class_name})" for i, p in enumerate(state.players))
+        + f"\n\n👉 Vez de <b>{first_hero.name}</b>! Declare sua ação no chat (ex: <i>\"ataco com 17\"</i>) ou peça conselho ao Loomis."
+    )
+    return True, briefing, state
 
 
 def normalize_session_id(identifier: int | str) -> tuple[int | None, uuid.UUID]:

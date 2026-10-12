@@ -30,6 +30,15 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
     # 1. Recupera ou cria estado básico (Jaula 1 ativa com herói) sem travar o loop de eventos
     state = await asyncio.to_thread(get_or_create_session_state, session_id, user_info=user_info)
 
+    # Se a sessão ainda estiver em recrutamento, orienta a finalizar a seleção de cartas
+    if state.is_recruiting:
+        if not state.players:
+            return "A arena ainda está fechada! Escolham seus heróis com <code>/select &lt;1-5&gt;</code> e depois usem <code>/done</code> para começar."
+        return (
+            f"Recrutas alistados até agora: <b>{', '.join(p.name for p in state.players)}</b>.\n"
+            f"Quando todos tiverem escolhido, digitem <code>/done</code> para Loomis abrir a Jaula 1 e iniciar a luta!"
+        )
+
     # 2. Registra a mensagem do usuário no buffer recente
     state.recent_messages.append(
         Message(

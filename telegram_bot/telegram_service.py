@@ -52,24 +52,28 @@ class TelegramService:
         self.on_message_callback: Callable[[str, dict], Awaitable[str]] | None = None
         self.on_reset_callback: Callable[[int], Any] | None = None
         self.on_select_callback: Callable[..., Any] | None = None
+        self.on_done_callback: Callable[..., Any] | None = None
 
     async def setup(
         self, 
         on_message: Callable[[str, dict], Awaitable[str]],
         on_reset: Callable[[int], Any] | None = None,
         on_select: Callable[..., Any] | None = None,
+        on_done: Callable[..., Any] | None = None,
     ) -> None:
-        """Inicializa a aplicação do Telegram recebendo callbacks para mensagem, reset e seleção de herói."""
+        """Inicializa a aplicação do Telegram recebendo callbacks para mensagem, reset, seleção e início."""
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN não configurado.")
 
         self.on_message_callback = on_message
         self.on_reset_callback = on_reset
         self.on_select_callback = on_select
+        self.on_done_callback = on_done
         self.app = Application.builder().token(self.token).build()
 
         self.app.add_handler(CommandHandler(["start"], self._start_handler))
         self.app.add_handler(CommandHandler(["select", "escolher"], self._select_handler))
+        self.app.add_handler(CommandHandler(["done", "pronto", "iniciar"], self._done_handler))
         self.app.add_handler(CommandHandler(["ajuda", "help"], self._ajuda_handler))
         self.app.add_handler(CommandHandler(["reset"], self._reset_handler))
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
@@ -150,7 +154,7 @@ class TelegramService:
             "• <code>/select 3</code> - <b>Jorick</b> (Guerreiro Humano | CA 13 | HP 5 | Ataque +4)\n"
             "• <code>/select 4</code> - <b>Yarrow</b> (Xamã Meio-Orc | CA 10 | HP 6 | Ataque +3)\n"
             "• <code>/select 5</code> - <b>Bet</b> (Maga Elfa | CA 7 | HP 4 | Ataque +7)\n\n"
-            "Digite <code>/select &lt;1-5&gt;</code> para alistar seu herói na arena!"
+            "Digite <code>/select &lt;1-5&gt;</code> para alistar seu herói. Quando todos estiverem prontos, use <code>/done</code> para iniciar a luta!"
         )
         try:
             await update.message.reply_text(cards_text, parse_mode="HTML")
@@ -192,6 +196,29 @@ class TelegramService:
         except Exception:
             await update.message.reply_text(reply_msg)
 
+    async def _done_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /done para encerrar o recrutamento e iniciar o combate na Jaula 1."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat = update.effective_chat
+        user = update.effective_user
+        session_id = str(chat.id if chat else user.id)
+
+        if self.on_done_callback:
+            try:
+                success, reply_msg, _ = await self._invoke_callback(self.on_done_callback, session_id)
+            except Exception as e:
+                logger.error(f"Erro ao finalizar recrutamento: {e}", exc_info=True)
+                reply_msg = "Ocorreu um erro ao iniciar a partida."
+        else:
+            reply_msg = "Início de combate não configurado."
+
+        try:
+            await update.message.reply_text(reply_msg, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(reply_msg)
+
     async def _ajuda_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Comando /ajuda para explicar comandos e regras de jogo em formato HTML."""
         if not update.message:
@@ -202,6 +229,7 @@ class TelegramService:
             "<b>Comandos:</b>\n"
             "• <code>/start</code> - Apresenta a arena e as 5 cartas de heróis.\n"
             "• <code>/select &lt;1-5&gt;</code> - Escolhe sua carta para o combate.\n"
+            "• <code>/done</code> - Encerra o recrutamento e inicia a luta na Jaula 1.\n"
             "• <code>/reset</code> - Reinicia a sessão e permite novo recrutamento.\n"
             "• <code>/ajuda</code> - Exibe estas instruções.\n\n"
             "<b>Como Jogar:</b>\n"

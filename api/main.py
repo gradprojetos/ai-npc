@@ -4,7 +4,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 
 from api.ai_core.orchestrator import process_npc_turn
-from api.motor_rpg.session_service import reset_player_session, select_hero_for_player
+from api.motor_rpg.session_service import (
+    finish_recruiting_for_session,
+    reset_player_session,
+    select_hero_for_player,
+)
 from telegram_bot.telegram_service import TelegramService
 
 load_dotenv()
@@ -22,6 +26,7 @@ async def lifespan(app: FastAPI):
         on_message=process_npc_turn,
         on_reset=reset_player_session,
         on_select=select_hero_for_player,
+        on_done=finish_recruiting_for_session,
     )
 
     try:
