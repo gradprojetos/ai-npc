@@ -167,7 +167,7 @@ def create_hero(archetype_or_name: str | int, player_id: str = "player_1", playe
     if not data:
         data = HERO_ARCHETYPES["jorick"]
 
-    display_name = f"{data['name']} ({player_name})" if player_name else data["name"]
+    display_name = data["name"]
 
     return HeroState(
         player_id=player_id,

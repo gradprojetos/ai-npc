@@ -332,6 +332,8 @@ class TelegramService:
         try:
             # Chama o orquestrador passando a mensagem e os metadados do jogador
             reply_text = await self.on_message_callback(user_text, user_info)
+            if not reply_text:
+                return
             logger.info(f"Resposta enviada para chat_id={chat.id if chat else None}: '{reply_text[:60]}...'")
         except Exception as e:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)

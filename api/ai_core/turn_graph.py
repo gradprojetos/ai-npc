@@ -26,19 +26,19 @@ async def extract_d20(text: str) -> int | None:
     if not text.strip():
         return None
 
-    # Tenta padrão com indicador de rolagem: d20 [19], tirei 15, rolei 20, deu 18, com 14, dado 12, etc.
+    # 1. Tenta padrão com palavras indicadoras: "com 15", "c 20", "rolei 18", "dado 12", "d20 20", etc.
     match = re.search(
-        r"\b(?:d20|tirei|rolei|deu|com|dado|número|numero)\s*[:=]?\s*([1-9]|1[0-9]|20)\b",
+        r"\b(?:d20|tirei|rolei|deu|com|c|dado|número|numero)\s*[:=]?\s*([1-9]|1[0-9]|20)\b",
         text,
         flags=re.IGNORECASE,
     )
     if match:
         return int(match.group(1))
 
-    # Se a mensagem for simplesmente um número isolado entre 1 e 20 (ex: "19")
-    stripped = text.strip()
-    if stripped.isdigit() and 1 <= int(stripped) <= 20:
-        return int(stripped)
+    # 2. Busca qualquer número isolado de 1 a 20 dentro da mensagem (ex: "ataco 20", "20")
+    numbers = re.findall(r"\b([1-9]|1[0-9]|20)\b", text)
+    if numbers:
+        return int(numbers[-1])
 
     return None
 
@@ -69,7 +69,7 @@ async def classify_intent(text: str) -> str:
         logger.warning(f"Falha ao classificar intenção via LLM ({repr(e)}), aplicando fallback por regex.")
         # Fallback por prefixos de ataque/combate
         combat_prefixes = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano|d20|rol|tiro)\w*"
-        if re.search(combat_prefixes, text, re.IGNORECASE):
+        if re.search(combat_prefixes, text, re.IGNORECASE) or extract_custom_d20_roll(text) is not None:
             return "combat"
         return "tactical_advice"
 
@@ -138,8 +138,7 @@ async def combat_node(state: GameState) -> dict:
     if d20 is None:
         lines = [
             "<b>Dungeon Master:</b>",
-            f"• <b>{hero.name}</b> preparou um ataque, mas nenhuma rolagem de dado foi informada!",
-            "• Declare o valor do seu <b>d20 físico</b> (ex: <i>\"ataco com 17\"</i>). [PENDENTE D20]",
+            f"• <b>{hero.name}</b> preparou um ataque, mas nenhuma rolagem de dado válida foi informada!",
         ]
         state.last_context = "\n".join(lines)
         return {
@@ -153,20 +152,19 @@ async def combat_node(state: GameState) -> dict:
     # initial_monster_cage = monster.cage_number
     # initial_monster_ac = monster.ac
 
-    # 1. Ataque do Herói (Dungeon Master direto com nome do golpe e HP do alvo)
+    # 1. Ataque do Herói atual (acumulado para o resumo da rodada)
     hero_res = resolve_hero_attack(hero=hero, monster=monster, d20=d20)
     if hero_res["is_critical"]:
         h_dmg = hero_res["damage_dealt"]
-        hero_action_text = f"acertou criticamente {h_dmg} de dano! [{initial_monster_name} HP: {monster.hp}/{monster.max_hp}]"
+        hero_action_text = f"acertou criticamente {h_dmg} de dano! [Monstro HP: {monster.hp}/{monster.max_hp}]"
     elif hero_res["is_hit"]:
-        hero_action_text = f"acertou 1 de dano! [{initial_monster_name} HP: {monster.hp}/{monster.max_hp}]"
+        hero_action_text = f"acertou 1 de dano! [Monstro HP: {monster.hp}/{monster.max_hp}]"
     else:
-        hero_action_text = f"errou o golpe! [{initial_monster_name} HP: {monster.hp}/{monster.max_hp}]"
+        hero_action_text = f"errou o golpe! [Monstro HP: {monster.hp}/{monster.max_hp}]"
 
-    dm_lines = [
-        "<b>Dungeon Master:</b>",
-        f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name} e {hero_action_text}",
-    ]
+    state.round_actions.append(
+        f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name} e {hero_action_text}"
+    )
 
     # 2. Gatilho Loomis: Monstro em 50% de HP ou menos
     has_fallen_hero = any(h.is_unconscious for h in state.players)
@@ -179,10 +177,9 @@ async def combat_node(state: GameState) -> dict:
         next_cage = monster.cage_number + 1
         new_beast = get_cage_monster(next_cage)
         state.monsters.append(new_beast)
-        dm_lines.append(f"• <b>{new_beast.name}</b> entrou na arena! [{new_beast.name} HP: {new_beast.hp}/{new_beast.max_hp}]")
+        state.round_actions.append(f"• <b>{new_beast.name}</b> entrou na arena! [Monstro HP: {new_beast.hp}/{new_beast.max_hp}]")
 
-    # 3. Derrota do Monstro e transição entre combates
-    monster_defeated_this_turn = monster.is_defeated
+    # 3. Derrota do Monstro
     if monster.is_defeated:
         undefeated = [m for m in state.monsters if not m.is_defeated]
         if undefeated:
@@ -194,42 +191,64 @@ async def combat_node(state: GameState) -> dict:
                 if h.hp <= 2:
                     h.restore_full_hp()
                     healed.append(h.name)
-
             if healed:
-                dm_lines.append(f"• Loomis curou {', '.join(healed)} com a poção!")
+                state.round_actions.append(f"• Loomis curou {', '.join(healed)} com a poção!")
 
             if monster.cage_number >= 4:
                 state.is_victory = True
-                dm_lines.append("• Todas as 4 jaulas foram superadas!")
+                state.round_actions.append("• Todas as 4 jaulas foram superadas!")
             else:
                 next_cage = monster.cage_number + 1
                 next_beast = get_cage_monster(next_cage)
                 state.monsters = [next_beast]
 
-    # 4. Contra-ataque da Fera (apenas se sobreviver e combate continuar)
-    if not monster_defeated_this_turn and state.monsters and not state.monsters[0].is_defeated and not state.is_victory:
-        active_beast = state.monsters[0]
-        conscious = [h for h in state.players if not h.is_unconscious]
-        if conscious:
-            target_hero = max(conscious, key=lambda h: h.hp)
-            monster_res = resolve_monster_attack(active_beast, target_hero)
+    # 4. Rotaciona a fila de iniciativa dos heróis
+    state.rotate_players()
 
-            if monster_res["is_critical"]:
-                m_dmg = monster_res["damage_dealt"]
-                m_action_text = f"acertou criticamente {m_dmg} de dano! [{target_hero.name} HP: {target_hero.hp}/{target_hero.max_hp}]"
-            elif monster_res["is_hit"]:
-                m_action_text = f"acertou 1 de dano! [{target_hero.name} HP: {target_hero.hp}/{target_hero.max_hp}]"
+    # 5. Verifica se a rodada terminou (todos os jogadores conscientes já declararam ação)
+    total_active_heroes = len([h for h in state.players if not h.is_unconscious]) or 1
+    round_finished = len(state.round_actions) >= total_active_heroes or state.is_victory
+
+    if not round_finished:
+        # Rodada ainda em andamento: não envia mensagem do DM nem do Loomis agora
+        state.last_context = None
+        return {
+            "last_context": None,
+            "players": state.players,
+            "monsters": state.monsters,
+            "round_actions": state.round_actions,
+            "is_victory": state.is_victory,
+            "recent_messages": state.recent_messages,
+        }
+
+    # 6. Rodada Encerrada: Turno dos Monstros (cada fera viva ataca 1 vez)
+    dm_lines = ["<b>Dungeon Master:</b>"] + state.round_actions
+    state.round_actions = []  # Reseta o buffer da rodada
+
+    if not state.is_victory:
+        alive_beasts = [m for m in state.monsters if not m.is_defeated]
+        conscious_heroes = [h for h in state.players if not h.is_unconscious]
+
+        for beast in alive_beasts:
+            if not conscious_heroes:
+                break
+            target_hero = max(conscious_heroes, key=lambda h: h.hp)
+            m_res = resolve_monster_attack(beast, target_hero)
+
+            if m_res["is_critical"]:
+                m_dmg = m_res["damage_dealt"]
+                m_text = f"acertou criticamente {m_dmg} de dano! [Herói HP: {target_hero.hp}/{target_hero.max_hp}]"
+            elif m_res["is_hit"]:
+                m_text = f"acertou 1 de dano! [Herói HP: {target_hero.hp}/{target_hero.max_hp}]"
             else:
-                m_action_text = f"errou o golpe! [{target_hero.name} HP: {target_hero.hp}/{target_hero.max_hp}]"
+                m_text = f"errou o golpe! [Herói HP: {target_hero.hp}/{target_hero.max_hp}]"
 
             dm_lines.append(
-                f"• <b>{active_beast.name}</b> contra-atacou <b>{target_hero.name}</b> com {active_beast.attack_name} e {m_action_text}"
+                f"• <b>{beast.name}</b> contra-atacou <b>{target_hero.name}</b> com {beast.attack_name} e {m_text}"
             )
             if target_hero.is_unconscious:
                 dm_lines.append(f"• <b>{target_hero.name}</b> caiu inconsciente!")
-
-    # 5. Rotaciona a iniciativa dos heróis
-    state.rotate_players()
+                conscious_heroes.remove(target_hero)
 
     state.last_context = "\n".join(dm_lines)
 
@@ -237,6 +256,7 @@ async def combat_node(state: GameState) -> dict:
         "last_context": state.last_context,
         "players": state.players,
         "monsters": state.monsters,
+        "round_actions": state.round_actions,
         "is_victory": state.is_victory,
         "recent_messages": state.recent_messages,
     }
@@ -245,6 +265,12 @@ async def combat_node(state: GameState) -> dict:
 async def npc_node(state: GameState) -> dict:
     """Nó principal de narração e diálogo do NPC Loomis em 1ª pessoa com trava anti-alucinação."""
     last_user_message = state.get_last_user_message()
+
+    # Se a rodada ainda estiver aberta aguardando outros heróis, não dispara mensagem
+    if state.last_context is None and not state.is_victory:
+        return {
+            "recent_messages": state.recent_messages,
+        }
 
     effective_system_prompt = (
         state.npcs[0].system_prompt
@@ -266,6 +292,7 @@ async def npc_node(state: GameState) -> dict:
         resposta_texto = await llm_client.generate_reply(
             message=prompt_context,
             system_prompt=effective_system_prompt,
+            model="ministral-3:8b",
         )
     except Exception as e:
         logger.warning(f"Falha ao gerar fala do Loomis via LLM ({e}), usando fala padrão de treino.")
@@ -273,7 +300,7 @@ async def npc_node(state: GameState) -> dict:
             resposta_texto = "Vocês conseguiram, recrutas! Todas as jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
         elif monster_fell:
             resposta_texto = "A fera caiu! Excelente golpe, recrutas! Mas mantenham o foco que a próxima jaula está à frente!"
-        elif "[PENDENTE D20]" in (state.last_context or ""):
+        elif "nenhuma rolagem de dado válida" in (state.last_context or ""):
             resposta_texto = "De nada adianta empunhar a arma sem rolar os dados! Jogue seu d20 na mesa e me diga quanto tirou!"
         else:
             resposta_texto = "Fiquem atentos às fraquezas da fera e mantenham a formação! Hesiod conta com a coragem de vocês!"

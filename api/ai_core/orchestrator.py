@@ -57,7 +57,7 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
     set_memory_session(session_id, final_state)
     await asyncio.to_thread(persist_session_state_to_db, final_state, chat_id=chat_id)
 
-    # 5. Retorna a última mensagem do Loomis
-    if final_state.recent_messages:
+    # 5. Retorna a fala gerada pelo Loomis se houver (caso a rodada continue em aberto, retorna string vazia)
+    if final_state.recent_messages and final_state.recent_messages[-1].role == "assistant":
         return final_state.recent_messages[-1].content
-    return "Loomis observa com firmeza, aguardando seu próximo movimento."
+    return ""

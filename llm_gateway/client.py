@@ -35,6 +35,7 @@ class LLMClient:
         system_prompt: str | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        model: str | None = None,
     ) -> str:
         """Envia mensagem para o LLM e retorna o texto da resposta gerada."""
         if not self.api_key:
@@ -52,7 +53,7 @@ class LLMClient:
         messages.append({"role": "user", "content": message})
 
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "temperature": temperature,
             "options": {
                 "num_predict": max_tokens,
