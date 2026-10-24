@@ -144,6 +144,10 @@ O classificador avalia a mensagem do jogador considerando 3 intenções possíve
 | **Guardrails com Regex** | **Murillo (E2)** | Sanitização de entrada no bot, filtro de palavras ofensivas, comandos inválidos e injeções óbvias. |
 | **Handshake Telegram & Infra** | **Murillo (E2)** | Manter compatibilidade das mensagens formatadas em HTML e persistência no PostgreSQL. |
 
+> [!IMPORTANT]
+> **Ponto de Atenção / Alinhamento com Murillo (Guardrails no Prompt):**
+> Antes de atualizar o `system_prompt` do Loomis no banco, verificar se o Murillo já inseriu regras anti-toxicidade/guardrails diretamente no prompt do NPC (ex: proibir palavrões, termos ofensivos ou conteúdo impróprio para contexto educacional), garantindo que as diretrizes de exploração sejam mescladas sem sobrescrever o trabalho de moderação dele.
+
 ---
 
 ## 5. Ordem de Execução Recomendada (Branch `feature/exploration-mode`)
@@ -156,7 +160,7 @@ O classificador avalia a mensagem do jogador considerando 3 intenções possíve
 - [ ] **Passo 0.5:** Corrigir mapeamento do herói por `player_id`/`telegram_id` do remetente e alternância de dano no contra-ataque.
 
 ### Etapa 2: Implementação do Modo Exploration
-- [ ] **Passo 1:** Atualizar o `system_prompt` de Loomis na tabela `npcs` (incluindo diretrizes de combate e lore de Hesiod para exploração).
+- [ ] **Passo 1:** Verificar se o Murillo adicionou regras anti-palavrão/guardrails no prompt e atualizar o `system_prompt` de Loomis na tabela `npcs` (mesclando regras de moderação, combate e lore de exploração).
 - [ ] **Passo 2:** Implementar `exploration_node` no LangGraph (preparando contexto e memória recente).
 - [ ] **Passo 3:** Expandir o classificador `classify_intent` (LLM as a judge) para 3 intenções (`combat`, `tactical_advice`, `exploration`).
 - [ ] **Passo 4:** Ajustar onboarding (Loomis instigando o teste pós `/done`), trava de combate ativo e encerramento definitivo do jogo na 4ª Jaula.
