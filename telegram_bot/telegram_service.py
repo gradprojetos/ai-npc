@@ -1,41 +1,95 @@
 import os
+import re
+import inspect
 import httpx
 import asyncio
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logger = logging.getLogger(__name__)
 
+
+def format_to_telegram_html(text: str) -> str:
+    """Converte Markdown para tags HTML e escapa caracteres fora de tags válidas do Telegram."""
+    if not text:
+        return ""
+    # Converte **negrito** para <b>negrito</b>
+    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    # Converte *itálico* para <i>itálico</i>
+    formatted = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", formatted)
+    # Converte `código` para <code>código</code>
+    formatted = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", formatted)
+
+    # Escapa caracteres &, <, > fora de tags HTML válidas do Telegram
+    valid_tag_pattern = r"(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)\b[^>]*>|<a\s+href=\"[^\"]+\"[^>]*>|</a>)"
+    tokens = re.split(valid_tag_pattern, formatted, flags=re.IGNORECASE)
+    parts: list[str] = []
+    for i, token in enumerate(tokens):
+        if i % 2 == 1:
+            parts.append(token)
+        else:
+            escaped = re.sub(r"&(?!amp;|lt;|gt;|quot;)", "&amp;", token)
+            escaped = escaped.replace("<", "&lt;").replace(">", "&gt;")
+            parts.append(escaped)
+    return "".join(parts)
+
+
+async def _invoke_callback(callback: Callable, *args, **kwargs) -> Any:
+    """Invoca callback seja ele assíncrono ou síncrono sem travar o event loop."""
+    if inspect.iscoroutinefunction(callback):
+        return await callback(*args, **kwargs)
+    return await asyncio.to_thread(callback, *args, **kwargs)
+
+
 class TelegramService:
+    _invoke_callback = staticmethod(_invoke_callback)
+
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
+        self.bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "pfg_npc_bot").lower()
         self.app: Application | None = None
         self.on_message_callback: Callable[[str, dict], Awaitable[str]] | None = None
-        self.on_reset_callback: Callable[[int], Awaitable[None]] | None = None
+        self.on_reset_callback: Callable[[int], Any] | None = None
+        self.on_select_callback: Callable[..., Any] | None = None
+        self.on_done_callback: Callable[..., Any] | None = None
 
     async def setup(
         self, 
         on_message: Callable[[str, dict], Awaitable[str]],
-        on_reset: Callable[[int], Awaitable[None]] | None = None,
+        on_reset: Callable[[int], Any] | None = None,
+        on_select: Callable[..., Any] | None = None,
+        on_done: Callable[..., Any] | None = None,
     ) -> None:
-        """Inicializa a aplicação do Telegram recebendo o orquestrador e handler de reset como callbacks."""
+        """Inicializa a aplicação do Telegram recebendo callbacks para mensagem, reset, seleção e início."""
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN não configurado.")
 
         self.on_message_callback = on_message
         self.on_reset_callback = on_reset
+        self.on_select_callback = on_select
+        self.on_done_callback = on_done
         self.app = Application.builder().token(self.token).build()
 
-        self.app.add_handler(CommandHandler("start", self._start_handler))
-        self.app.add_handler(CommandHandler("reset", self._reset_handler))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._message_handler))
+        self.app.add_handler(CommandHandler(["start"], self._start_handler))
+        self.app.add_handler(CommandHandler(["select", "escolher"], self._select_handler))
+        self.app.add_handler(CommandHandler(["done", "pronto", "iniciar"], self._done_handler))
+        self.app.add_handler(CommandHandler(["ajuda", "help"], self._ajuda_handler))
+        self.app.add_handler(CommandHandler(["reset"], self._reset_handler))
+        self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
         await self.app.initialize()
         await self.app.start()
-        logger.info("Telegram Application inicializada com sucesso.")
+        try:
+            bot_me = await self.app.bot.get_me()
+            if bot_me and bot_me.username:
+                self.bot_username = bot_me.username.lower()
+        except Exception as e:
+            logger.debug(f"Não foi possível obter username do bot via get_me: {e}")
+        logger.info(f"Telegram Application inicializada com sucesso (bot_username=@{self.bot_username}).")
 
     async def _get_cloudflared_url(self) -> str | None:
         """Tenta descobrir a URL pública gerada pelo container do cloudflared na rede Docker."""
@@ -91,33 +145,177 @@ class TelegramService:
             logger.info("Telegram Application finalizada.")
 
     async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if update.message:
-            await update.message.reply_text("Olá! Eu sou seu NPC. Fale comigo!")
+        """Apresenta a Arena de Hesiod e recruta os jogadores com as 5 cartas canônicas."""
+        if not update.message:
+            return
 
-    async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Comando /reset para apagar o histórico e recomeçar a conversa."""
+        chat = update.effective_chat
+        user = update.effective_user
+        logger.info(f"Comando /start recebido de user_id={user.id if user else None} ({user.first_name if user else None}) no chat_id={chat.id if chat else None}")
+
+        cards_text = (
+            "<b>Arena de Treinamento de Hesiod</b>\n\n"
+            "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! "
+            "Antes de abrirmos as jaulas, cada recruta deve escolher sua carta:\n\n"
+            "• <code>/select 1</code> - <b>Evindol</b> (Ladino Humano | CA 11 | HP 3 | Ataque +6)\n"
+            "  ↳ <i>Poder: Ataque Furtivo (dano dobrado se flanquear)</i>\n"
+            "• <code>/select 2</code> - <b>Raen</b> (Bárbara Anã | CA 9 | HP 7 | Ataque +5)\n"
+            "  ↳ <i>Poder: Guerreira Feroz (empurra o monstro 2 casas ao ser atingida)</i>\n"
+            "• <code>/select 3</code> - <b>Jorick</b> (Guerreiro Humano | CA 13 | HP 5 | Ataque +4)\n"
+            "  ↳ <i>Poder: Investida (+2 no ataque ao começar longe da fera)</i>\n"
+            "• <code>/select 4</code> - <b>Yarrow</b> (Xamã Meio-Orc | CA 10 | HP 6 | Ataque +3)\n"
+            "  ↳ <i>Poder: Espírito da Floresta (cura ou suporte aos aliados)</i>\n"
+            "• <code>/select 5</code> - <b>Bet</b> (Maga Elfa | CA 7 | HP 4 | Ataque +7)\n"
+            "  ↳ <i>Poder: Onda Explosiva (dano em área atingindo criaturas adjacentes)</i>\n\n"
+            "Digite <code>/select &lt;1-5&gt;</code> para alistar seu herói. Quando todos estiverem prontos, use <code>/done</code> para iniciar a luta!"
+        )
+        try:
+            await update.message.reply_text(cards_text, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(cards_text)
+
+    async def _select_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /select <1-5> para o jogador escolher sua ficha no grupo."""
         if not update.message or not update.effective_user:
             return
 
-        telegram_id = update.effective_user.id
+        chat = update.effective_chat
+        user = update.effective_user
+        session_id = str(chat.id if chat else user.id)
+        player_name = user.first_name or user.username or f"Recruta_{user.id}"
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Informe o número da carta! Exemplo: <code>/select 2</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+        choice = args[0]
+        logger.info(f"Comando /select {choice} de user_id={user.id} ({player_name}) para session={session_id}")
+        if self.on_select_callback:
+            try:
+                success, reply_msg, _ = await self._invoke_callback(
+                    self.on_select_callback, session_id, str(user.id), player_name, choice
+                )
+                logger.info(f"Resultado /select: success={success}, msg={reply_msg[:60]}...")
+            except Exception as e:
+                logger.error(f"Erro ao selecionar herói: {e}", exc_info=True)
+                reply_msg = "Ocorreu um erro ao selecionar o herói."
+        else:
+            reply_msg = "Seleção de herói não configurada."
+
+        try:
+            await update.message.reply_text(reply_msg, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(reply_msg)
+
+    async def _done_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /done para encerrar o recrutamento e iniciar o combate na Jaula 1."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat = update.effective_chat
+        user = update.effective_user
+        session_id = str(chat.id if chat else user.id)
+        logger.info(f"Comando /done recebido de user_id={user.id} para session={session_id}")
+
+        if self.on_done_callback:
+            try:
+                success, reply_msg, _ = await self._invoke_callback(self.on_done_callback, session_id)
+                logger.info(f"Resultado /done: success={success}, msg={reply_msg[:60]}...")
+            except Exception as e:
+                logger.error(f"Erro ao finalizar recrutamento: {e}", exc_info=True)
+                reply_msg = "Ocorreu um erro ao iniciar a partida."
+        else:
+            reply_msg = "Início de combate não configurado."
+
+        try:
+            await update.message.reply_text(reply_msg, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(reply_msg)
+
+    async def _ajuda_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /ajuda para explicar comandos e regras de jogo em formato HTML."""
+        if not update.message:
+            return
+        help_text = (
+            "<b>Arena de Treinamento de Hesiod — Regras & Comandos</b>\n\n"
+            "Eu sou <b>Loomis</b>, o treinador da vila de Hesiod! Aqui você aprende a enfrentar feras reais antes de sair para o mundo.\n\n"
+            "<b>Comandos:</b>\n"
+            "• <code>/start</code> - Apresenta a arena e as 5 cartas de heróis.\n"
+            "• <code>/select &lt;1-5&gt;</code> - Escolhe sua carta para o combate.\n"
+            "• <code>/done</code> - Encerra o recrutamento e inicia a luta na Jaula 1.\n"
+            "• <code>/reset</code> - Reinicia a sessão e permite novo recrutamento.\n"
+            "• <code>/help</code> - Exibe estas instruções.\n\n"
+            "<b>Como Jogar:</b>\n"
+            "• <b>Combate:</b> Declare sua ação e o resultado do seu d20 físico real (ex: <i>\"ataco com 19\"</i>).\n"
+            "• <b>Conselho Tático:</b> Peça dicas ou pergunte sobre as fraquezas da fera na jaula (Ação Livre, não gasta turno).\n"
+            "• <b>No Grupo:</b> Comandos funcionam sempre. Falas abertas de RPG são respondidas pela arena, mas conversas entre jogadores com reply ou menção @ são ignoradas pela IA."
+        )
+        try:
+            await update.message.reply_text(help_text, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(help_text)
+
+    async def _reset_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /reset para apagar a sessão inteira da arena/grupo e recomeçar a partida."""
+        if not update.message or not update.effective_user:
+            return
+
+        chat = update.effective_chat
+        user = update.effective_user
+        target_id = chat.id if chat else user.id
+        logger.info(f"Comando /reset recebido de user_id={user.id} para session target_id={target_id}")
+
         if self.on_reset_callback:
             try:
-                await self.on_reset_callback(telegram_id)
-                await update.message.reply_text("🧹 Histórico e memória apagados! Pode começar de novo.")
+                await self._invoke_callback(self.on_reset_callback, target_id)
+
+                await update.message.reply_text(
+                    "<b>Sessão de jogo reiniciada! A Jaula 1 foi trancada e a arena restaurada.</b>\n\n"
+                    "<i>Escolham novamente seus recrutas para o treino:</i>",
+                    parse_mode="HTML",
+                )
+                await self._start_handler(update, context)
             except Exception as e:
                 logger.error(f"Erro ao processar /reset: {e}", exc_info=True)
-                await update.message.reply_text("Ocorreu um erro ao tentar reiniciar seu histórico.")
+                await update.message.reply_text("Ocorreu um erro ao tentar reiniciar a sessão do jogo.")
         else:
             await update.message.reply_text("Comando de reset não configurado.")
 
     async def _message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Recebe texto, passa para a main.py processar e devolve a resposta."""
+        """Recebe texto, passa para a main.py processar e devolve a resposta formatada em HTML."""
         if not update.message or not update.message.text or not self.on_message_callback:
             return
 
-        user_text = update.message.text
-        user = update.effective_user
         chat = update.effective_chat
+        user = update.effective_user
+        raw_text = update.message.text.strip()
+        is_command = raw_text.startswith("/")
+
+        # Em grupos, se for mensagem de texto comum (não-comando) dirigida a outro humano, a IA não responde:
+        if not is_command and chat and chat.type in ("group", "supergroup"):
+            # 1. Se for reply direcionado a outro usuário humano:
+            if update.message.reply_to_message and update.message.reply_to_message.from_user:
+                if update.message.reply_to_message.from_user.id != context.bot.id:
+                    return
+
+            # 2. Se contiver menção @ a outro usuário que não seja o bot:
+            mentions = re.findall(r"@([a-zA-Z0-9_]+)", raw_text)
+            bot_username = (context.bot.username or self.bot_username or "").lower()
+            other_mentions = [m for m in mentions if m.lower() != bot_username]
+            if other_mentions:
+                return
+
+        user_text = raw_text
+        bot_username = (context.bot.username or self.bot_username or "").lower()
+        if bot_username:
+            user_text = re.sub(rf"@{re.escape(bot_username)}", "", user_text, flags=re.IGNORECASE).strip()
+
+        logger.info(f"Mensagem recebida [chat_id={chat.id if chat else None}, user={user.username if user else None}]: '{user_text}'")
+
         user_info = {
             "telegram_id": user.id if user else None,
             "username": user.username if user else None,
@@ -126,13 +324,32 @@ class TelegramService:
             "chat_id": chat.id if chat else None,
         }
 
-        await update.message.chat.send_action(action="typing")
+        try:
+            await update.message.chat.send_action(action="typing")
+        except Exception as e:
+            logger.debug(f"Não foi possível enviar typing action: {e}")
 
         try:
             # Chama o orquestrador passando a mensagem e os metadados do jogador
             reply_text = await self.on_message_callback(user_text, user_info)
+            if not reply_text:
+                return
+            logger.info(f"Resposta enviada para chat_id={chat.id if chat else None}: '{reply_text[:60]}...'")
         except Exception as e:
             logger.error(f"Erro no orquestrador: {e}", exc_info=True)
             reply_text = "Desculpe, ocorreu um erro interno ao pensar."
 
-        await update.message.reply_text(reply_text)
+        formatted_reply = format_to_telegram_html(reply_text)
+        try:
+            await update.message.reply_text(formatted_reply, parse_mode="HTML")
+        except BadRequest as e:
+            logger.warning(f"Erro de formatação HTML do Telegram ({e}). Enviando como texto puro.")
+            clean_text = re.sub(r"<[^>]+>", "", reply_text)
+            await update.message.reply_text(clean_text)
+        except Exception as e:
+            logger.error(f"Erro ao enviar resposta no Telegram ({e}). Tentando novamente...", exc_info=True)
+            try:
+                await update.message.reply_text(formatted_reply, parse_mode="HTML")
+            except Exception:
+                clean_text = re.sub(r"<[^>]+>", "", reply_text)
+                await update.message.reply_text(clean_text)

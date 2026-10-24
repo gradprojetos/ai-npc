@@ -18,9 +18,10 @@ dependencies = [
     { name = "langgraph" },
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "sqlalchemy" },
     { name = "python-telegram-bot", extra = ["job-queue"] },
+    { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
 
@@ -32,9 +33,10 @@ requires-dist = [
     { name = "langgraph" },
     { name = "pgvector" },
     { name = "psycopg", extras = ["binary"] },
+    { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "sqlalchemy" },
     { name = "python-telegram-bot", extras = ["job-queue"] },
+    { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
 

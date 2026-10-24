@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 # valores padrao para comunicacao com o servico llm
 DEFAULT_LLM_URL = "https://llm.ic.unicamp.br/api/chat/completions"
 DEFAULT_LLM_MODEL = "gemma4:e4b"
-DEFAULT_REQUEST_TIMEOUT = 60.0
+DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_MAX_TOKENS = 200
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "60"))
 
 
 class LLMClient:
@@ -35,6 +35,7 @@ class LLMClient:
         system_prompt: str | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        model: str | None = None,
     ) -> str:
         """Envia mensagem para o LLM e retorna o texto da resposta gerada."""
         if not self.api_key:
@@ -52,10 +53,10 @@ class LLMClient:
         messages.append({"role": "user", "content": message})
 
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "temperature": temperature,
             "options": {
-                "num_preditct": max_tokens, # formato do ollama, eh um corte abrupto (teto), e não uma qtd a ser gerada
+                "num_predict": max_tokens,
             },
             "messages": messages,
         }

@@ -1,10 +1,15 @@
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 
 from api.ai_core.orchestrator import process_npc_turn
-from api.motor_rpg.session_service import reset_player_session
+from api.motor_rpg.session_service import (
+    finish_recruiting_for_session,
+    reset_player_session,
+    select_hero_for_player,
+)
 from telegram_bot.telegram_service import TelegramService
 
 load_dotenv()
@@ -21,6 +26,8 @@ async def lifespan(app: FastAPI):
     await telegram_service.setup(
         on_message=process_npc_turn,
         on_reset=reset_player_session,
+        on_select=select_hero_for_player,
+        on_done=finish_recruiting_for_session,
     )
 
     try:
@@ -47,7 +54,7 @@ async def telegram_webhook(request: Request):
     """Endpoint público consumido pelo Telegram via HTTP POST."""
     try:
         data = await request.json()
-        await telegram_service.process_update(data)
+        asyncio.create_task(telegram_service.process_update(data))
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
