@@ -97,7 +97,7 @@ def select_hero_for_player(
         if chat_id_int is not None:
             dummy_ids.add(str(chat_id_int))
 
-        if len(state.players) == 1 and (state.players[0].player_id in dummy_ids or "(" not in state.players[0].name):
+        if len(state.players) == 1 and state.players[0].player_id in dummy_ids:
             state.players[0] = hero
         else:
             state.players.append(hero)
@@ -253,11 +253,11 @@ def get_or_create_session_state(
                 db_npc = db.query(NPC).filter_by(name="Loomis").first()
                 system_prompt = db_npc.system_prompt if db_npc else ""
 
-                # Se já houver mensagens ou heróis alistados, combate já saiu do recrutamento
-                is_recruiting = len(db_messages) == 0 and len(players) == 0
+                # Se já houver mensagens salvas, a sessão já saiu da fase de recrutamento (/done foi acionado)
+                is_recruiting = len(db_messages) == 0
 
                 return GameState(
-                    session_id=str(session_db.session_id),
+                    session_id=str(session_id),
                     location=session_db.location,
                     players=players,
                     monsters=monsters if monsters else [get_cage_monster(1)],

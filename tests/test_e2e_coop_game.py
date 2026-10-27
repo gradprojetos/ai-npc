@@ -1,5 +1,3 @@
-from unittest.mock import AsyncMock, patch
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,6 +10,7 @@ from api.ai_core.turn_graph import (
 from api.main import app
 from api.motor_rpg.session_service import (
     finish_recruiting_for_session,
+    reset_game_session,
     select_hero_for_player,
 )
 
@@ -21,14 +20,18 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def clean_test_state():
     """Limpa estado em memória e banco antes de cada teste."""
-    session_id = "test_coop_e2e"
-    _round_buffers.pop(session_id, None)
-    _last_monster_targets.pop(session_id, None)
-    _exploration_counters.pop(session_id, None)
+    sessions = ["test_coop_e2e", "test_rest_session", "test_full_victory"]
+    for s_id in sessions:
+        reset_game_session(s_id)
+        _round_buffers.pop(s_id, None)
+        _last_monster_targets.pop(s_id, None)
+        _exploration_counters.pop(s_id, None)
     yield
-    _round_buffers.pop(session_id, None)
-    _last_monster_targets.pop(session_id, None)
-    _exploration_counters.pop(session_id, None)
+    for s_id in sessions:
+        reset_game_session(s_id)
+        _round_buffers.pop(s_id, None)
+        _last_monster_targets.pop(s_id, None)
+        _exploration_counters.pop(s_id, None)
 
 
 @pytest.mark.asyncio
@@ -55,7 +58,7 @@ async def test_e2e_cooperative_multiplayer_flow():
         choice="1",
     )
     assert ok1 is True
-    assert "Evindol (Isaac)" in state.players[0].name
+    assert state.players[0].name == "Evindol"
     assert len(state.players) == 1
 
     ok2, msg2, state = select_hero_for_player(
@@ -83,49 +86,35 @@ async def test_e2e_cooperative_multiplayer_flow():
     assert "Jaula 1 Aberta!" not in briefing
 
     # =========================================================================
-    # 3. Fase de Exploração: Isaac pergunta sobre o caldeirão
+    # 3. Fase de Exploração: Isaac pergunta sobre o caldeirão (chamada real de LLM)
     # =========================================================================
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply") as mock_llm:
-        mock_llm.side_effect = [
-            "exploration",  # classify_intent
-            "Esse caldeirão ferve folhas de menta e casca de limão da mata. Uma poção revigorante para quando a coisa ficar feia!",  # Loomis
-        ]
-        reply_exp = await process_npc_turn(
-            user_message="Loomis, o que você está cozinhando naquele caldeirão grande?",
-            user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
-        )
-
+    reply_exp = await process_npc_turn(
+        user_message="Loomis, o que você está cozinhando naquele caldeirão grande?",
+        user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+    )
     assert "Loomis:" in reply_exp
-    assert "poção revigorante" in reply_exp
+    assert len(reply_exp) > 20
 
     # =========================================================================
-    # 4. Transição para Combate: Pedro diz "estamos prontos"
+    # 4. Transição para Combate: Pedro diz "estamos prontos" (chamada real de LLM)
     # =========================================================================
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply") as mock_llm:
-        mock_llm.side_effect = [
-            "combat",  # classify_intent reconhece prontidão
-            "Aí sim, recrutas! As correntes estão descendo, mostrem o que aprenderam!",  # Loomis
-        ]
-        reply_ready = await process_npc_turn(
-            user_message="Estamos prontos para a fera, Loomis! Puxe a alavanca!",
-            user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
-        )
-
+    reply_ready = await process_npc_turn(
+        user_message="Estamos prontos para a fera, Loomis! Puxe a alavanca!",
+        user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
+    )
     assert "Dungeon Master:" in reply_ready
     assert "Jaula 1 foi aberta" in reply_ready
     assert "Bullette Faminto" in reply_ready
     assert "Loomis:" in reply_ready
 
     # =========================================================================
-    # 5. Rodada 1 de Combate (Fechada)
+    # 5. Rodada 1 de Combate (Fechada, chamada real de LLM)
     # =========================================================================
     # Ação 1: Isaac (Evindol) ataca com 19
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply", new=AsyncMock(return_value="combat")):
-        with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=19)):
-            reply_round1_p1 = await process_npc_turn(
-                user_message="ataco a fera tirei 19 no dado",
-                user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
-            )
+    reply_round1_p1 = await process_npc_turn(
+        user_message="ataco a fera tirei 19 no dado",
+        user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+    )
 
     # Rodada ainda aberta aguardando ação de Pedro: não envia resumo de combate
     assert reply_round1_p1 == ""
@@ -133,49 +122,35 @@ async def test_e2e_cooperative_multiplayer_flow():
     assert "Evindol" in _round_buffers[session_id][0]
 
     # Ação 2: Pedro (Raen) ataca com 17 -> FECHA A RODADA
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply") as mock_llm:
-        mock_llm.side_effect = [
-            "combat",  # classify_intent
-            "Isso! Dois golpes certeiros! Mantenham a pressão!",  # Loomis
-        ]
-        with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=17)):
-            reply_round1_p2 = await process_npc_turn(
-                user_message="desfiro um machadada forte com 17",
-                user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
-            )
+    reply_round1_p2 = await process_npc_turn(
+        user_message="desfiro um machadada forte com 17",
+        user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
+    )
 
     assert "Dungeon Master:" in reply_round1_p2
     assert "Evindol" in reply_round1_p2
     assert "Raen" in reply_round1_p2
     # Contra-ataque: Raen tem 7 HP > Evindol 3 HP -> Monstro foca em Raen
-    assert "contra-atacou <b>Raen (Pedro)</b>" in reply_round1_p2 or "contra-atacou <b>Raen</b>" in reply_round1_p2
+    assert "contra-atacou <b>Raen</b>" in reply_round1_p2
     assert "Loomis:" in reply_round1_p2
 
     # =========================================================================
     # 6. Rodada 2: Alternância Canônica de Alvo do Monstro
     # =========================================================================
     # Isaac ataca
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply", new=AsyncMock(return_value="combat")):
-        with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=18)):
-            await process_npc_turn(
-                user_message="ataco com 18",
-                user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
-            )
+    await process_npc_turn(
+        user_message="ataco com 18",
+        user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+    )
 
     # Pedro ataca e fecha a rodada 2
-    with patch("api.ai_core.turn_graph.llm_client.generate_reply") as mock_llm:
-        mock_llm.side_effect = [
-            "combat",
-            "Cuidado com a cauda da fera!",
-        ]
-        with patch("api.ai_core.turn_graph.extract_d20", new=AsyncMock(return_value=16)):
-            reply_round2 = await process_npc_turn(
-                user_message="golpeio com 16",
-                user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
-            )
+    reply_round2 = await process_npc_turn(
+        user_message="golpeio com 16",
+        user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
+    )
 
-    # Regra canônica: criatura não foca em Raen novamente, mesmo que Raen tenha 6 HP > Evindol 3 HP
-    assert "contra-atacou <b>Evindol (Isaac)</b>" in reply_round2 or "contra-atacou <b>Evindol</b>" in reply_round2
+    # Regra canônica: criatura não foca em Raen novamente
+    assert "contra-atacou <b>Evindol</b>" in reply_round2
 
 
 def test_api_rest_endpoints_simulation():
@@ -205,16 +180,15 @@ def test_api_rest_endpoints_simulation():
     data = resp_state.json()
     assert data["session_id"] == session_id
     assert len(data["players"]) == 1
-    assert data["players"][0]["name"] == "Jorick (Lucas)"
+    assert data["players"][0]["name"] == "Jorick"
 
-    # 4. /game/message com mock de IA
-    with patch("api.ai_core.orchestrator.process_npc_turn", new=AsyncMock(return_value="<b>Loomis:</b> Olá, recruta!")):
-        resp_msg = client.post("/game/message", json={
-            "session_id": session_id,
-            "player_id": "u1",
-            "player_name": "Lucas",
-            "message": "Olá Loomis!",
-        })
+    # 4. /game/message com chamada real de IA
+    resp_msg = client.post("/game/message", json={
+        "session_id": session_id,
+        "player_id": "u1",
+        "player_name": "Lucas",
+        "message": "Olá Loomis!",
+    })
     assert resp_msg.status_code == 200
     assert "Loomis:" in resp_msg.json()["reply"]
 
@@ -222,3 +196,52 @@ def test_api_rest_endpoints_simulation():
     resp_reset = client.post("/game/reset", json={"session_id": session_id})
     assert resp_reset.status_code == 200
     assert resp_reset.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_e2e_full_campaign_until_victory():
+    """Simulação ponta a ponta completa de todas as 4 jaulas até a vitória final do grupo."""
+    session_id = "test_full_victory"
+
+    # 1. Alistamento de heróis via API REST
+    client.post("/game/select", json={"session_id": session_id, "player_id": "101", "player_name": "Isaac", "choice": 1})
+    client.post("/game/select", json={"session_id": session_id, "player_id": "202", "player_name": "Pedro", "choice": 2})
+
+    # 2. Finaliza recrutamento
+    resp_done = client.post("/game/done", json={"session_id": session_id})
+    assert resp_done.status_code == 200
+
+    # 3. Transição para combate
+    await process_npc_turn(
+        user_message="Estamos prontos para a arena!",
+        user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+    )
+
+    # 4. Batalha contínua até derrotar as 4 jaulas e atingir vitória
+    max_rounds = 30
+    victory_reached = False
+    last_reply = ""
+
+    for _ in range(max_rounds):
+        # Isaac ataca
+        await process_npc_turn(
+            user_message="ataco a criatura com 20",
+            user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+        )
+
+        # Pedro ataca e fecha a rodada
+        last_reply = await process_npc_turn(
+            user_message="golpeio a fera com 20",
+            user_info={"session_id": session_id, "telegram_id": "202", "first_name": "Pedro"},
+        )
+
+        state_resp = client.get(f"/game/state/{session_id}")
+        assert state_resp.status_code == 200
+        state_data = state_resp.json()
+
+        if state_data["is_victory"]:
+            victory_reached = True
+            break
+
+    assert victory_reached is True
+    assert "Todas as 4 jaulas foram superadas" in last_reply
