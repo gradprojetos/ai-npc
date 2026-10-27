@@ -5,7 +5,6 @@ from api.ai_core.turn_graph import turn_graph
 from api.motor_rpg.session_service import (
     get_or_create_session_state,
     persist_session_state_to_db,
-    set_memory_session,
 )
 from api.schemas.rpg import GameState, Message
 
@@ -39,10 +38,11 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
             f"Quando todos tiverem escolhido, digitem <code>/done</code> para Loomis abrir a Jaula 1 e iniciar a luta!"
         )
 
-    # 2. Registra a mensagem do usuário no buffer recente
+    # 2. Registra a mensagem do usuário com identificador do jogador
+    sender = str(user_info.get("telegram_id") or user_info.get("player_id") or "Jogador") if user_info else "Jogador"
     state.recent_messages.append(
         Message(
-            sender="Jogador",
+            sender=sender,
             content=user_message,
             role="user",
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -53,8 +53,7 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
     raw_final = await turn_graph.ainvoke(state)
     final_state = GameState(**raw_final) if isinstance(raw_final, dict) else raw_final
 
-    # 4. Salva o estado atualizado na memória e no banco relacional de forma assíncrona
-    set_memory_session(session_id, final_state)
+    # 4. Salva o estado atualizado no banco relacional de forma assíncrona
     await asyncio.to_thread(persist_session_state_to_db, final_state, chat_id=chat_id)
 
     # 5. Retorna a fala gerada pelo Loomis se houver (caso a rodada continue em aberto, retorna string vazia)

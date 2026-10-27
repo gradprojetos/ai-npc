@@ -78,7 +78,6 @@ class GameState(BaseModel):
 
     last_context: str | None = None
     recent_messages: list[Message] = Field(default_factory=list)
-    round_actions: list[str] = Field(default_factory=list)
     is_recruiting: bool = True
     is_victory: bool = False
 
