@@ -3,7 +3,6 @@
 from typing import Sequence, Union
 
 
-from alembic import op
 
 
 revision: str = "0001_initial"

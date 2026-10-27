@@ -1,53 +1,27 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from api.schemas.rpg import (
-    HeroState,
-    MonsterState,
-    NPCState,
-    GameState,
-    Message,
-)
 from api.motor_rpg.motor_rpg import (
-    create_hero,
-    get_cage_monster,
-    HERO_CARDS,
     CARD_BY_NAME,
     HERO_ARCHETYPES,
+    HERO_CARDS,
+    create_hero,
+    get_cage_monster,
     get_hero_card_number,
 )
-from db.models import Session, Hero, Monster, Message as MessageDB, NPC
+from api.schemas.rpg import (
+    GameState,
+    HeroState,
+    Message,
+    MonsterState,
+    NPCState,
+)
+from db.models import NPC, Hero, Monster, Session
+from db.models import Message as MessageDB
 from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-
-def get_memory_session(session_id: str) -> GameState | None:
-    """Recupera a sessão do banco (mantido para compatibilidade de testes)."""
-    try:
-        norm_chat_id, session_uuid = normalize_session_id(session_id)
-        with SessionLocal() as db:
-            session_db = None
-            if norm_chat_id is not None:
-                session_db = db.query(Session).filter_by(chat_id=norm_chat_id).first()
-            if not session_db:
-                session_db = db.query(Session).filter_by(session_id=session_uuid).first()
-            if session_db:
-                return get_or_create_session_state(session_id)
-    except Exception:
-        pass
-    return None
-
-
-def clear_memory_session(session_id: str) -> None:
-    """Limpa a sessão no banco (mantido para compatibilidade de testes)."""
-    reset_game_session(session_id)
-
-
-def set_memory_session(session_id: str, state: GameState) -> None:
-    """Persiste a sessão no banco (mantido para compatibilidade de testes)."""
-    persist_session_state_to_db(state)
 
 
 def create_initial_rpg_state(
@@ -123,7 +97,7 @@ def select_hero_for_player(
         if chat_id_int is not None:
             dummy_ids.add(str(chat_id_int))
 
-        if len(state.players) == 1 and (state.players[0].player_id in dummy_ids or "(" not in state.players[0].name):
+        if len(state.players) == 1 and state.players[0].player_id in dummy_ids:
             state.players[0] = hero
         else:
             state.players.append(hero)
@@ -173,7 +147,7 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
             sender="Loomis",
             content=briefing,
             role="assistant",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
     )
     persist_session_state_to_db(state)
@@ -197,12 +171,6 @@ def normalize_session_id(identifier: int | str) -> tuple[int | None, uuid.UUID]:
         session_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, raw_str)
 
     return chat_id_int, session_uuid
-
-
-def resolve_session_uuid(session_id: str) -> uuid.UUID:
-    """Garante um UUID válido para chaves primárias do PostgreSQL."""
-    _, session_uuid = normalize_session_id(session_id)
-    return session_uuid
 
 
 def get_or_create_session_state(
@@ -285,11 +253,11 @@ def get_or_create_session_state(
                 db_npc = db.query(NPC).filter_by(name="Loomis").first()
                 system_prompt = db_npc.system_prompt if db_npc else ""
 
-                # Se já houver mensagens ou heróis alistados, combate já saiu do recrutamento
-                is_recruiting = len(db_messages) == 0 and len(players) == 0
+                # Se já houver mensagens salvas, a sessão já saiu da fase de recrutamento (/done foi acionado)
+                is_recruiting = len(db_messages) == 0
 
                 return GameState(
-                    session_id=str(session_db.session_id),
+                    session_id=str(session_id),
                     location=session_db.location,
                     players=players,
                     monsters=monsters if monsters else [get_cage_monster(1)],

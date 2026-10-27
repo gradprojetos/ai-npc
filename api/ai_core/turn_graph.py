@@ -179,8 +179,9 @@ async def combat_node(state: GameState) -> dict:
                 hero = p
                 break
 
-    # Identifica o monstro alvo (se houver mais de um e o jogador tiver citado o nome)
-    monster = state.monsters[0]
+    # Identifica o monstro alvo (prioriza monstro ativo e não derrotado)
+    active_monsters = [m for m in state.monsters if not m.is_defeated]
+    monster = active_monsters[0] if active_monsters else (state.monsters[0] if state.monsters else None)
     last_msg_lower = last_user_message.lower()
     for m in state.monsters:
         if not m.is_defeated and any(part in last_msg_lower for part in m.name.lower().split()):
@@ -253,20 +254,23 @@ async def combat_node(state: GameState) -> dict:
             if healed:
                 round_actions.append(f"• Loomis curou {', '.join(healed)} com a poção!")
 
-            if monster.cage_number >= 4:
+            max_cage = max(m.cage_number for m in state.monsters) if state.monsters else monster.cage_number
+            if max_cage >= 4:
                 state.is_victory = True
                 round_actions.append("• Todas as 4 jaulas foram superadas!")
             else:
-                next_cage = monster.cage_number + 1
+                next_cage = max_cage + 1
                 next_beast = get_cage_monster(next_cage)
                 state.monsters = [next_beast]
+                round_actions.append(f"• <b>{next_beast.name}</b> entrou na arena! [Monstro HP: {next_beast.hp}/{next_beast.max_hp}]")
 
     # 4. Rotaciona a fila de iniciativa dos heróis
     state.rotate_players()
 
     # 5. Verifica se a rodada terminou (todos os jogadores conscientes já declararam ação)
     total_active_heroes = len([h for h in state.players if not h.is_unconscious]) or 1
-    round_finished = len(round_actions) >= total_active_heroes or state.is_victory
+    hero_attacks = [a for a in round_actions if "atacou" in a]
+    round_finished = len(hero_attacks) >= total_active_heroes or state.is_victory
 
     if not round_finished:
         # Rodada ainda em andamento: não envia mensagem do DM nem do Loomis agora
