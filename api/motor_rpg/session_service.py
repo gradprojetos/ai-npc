@@ -1,53 +1,27 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from api.schemas.rpg import (
-    HeroState,
-    MonsterState,
-    NPCState,
-    GameState,
-    Message,
-)
 from api.motor_rpg.motor_rpg import (
-    create_hero,
-    get_cage_monster,
-    HERO_CARDS,
     CARD_BY_NAME,
     HERO_ARCHETYPES,
+    HERO_CARDS,
+    create_hero,
+    get_cage_monster,
     get_hero_card_number,
 )
-from db.models import Session, Hero, Monster, Message as MessageDB, NPC
+from api.schemas.rpg import (
+    GameState,
+    HeroState,
+    Message,
+    MonsterState,
+    NPCState,
+)
+from db.models import NPC, Hero, Monster, Session
+from db.models import Message as MessageDB
 from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-
-def get_memory_session(session_id: str) -> GameState | None:
-    """Recupera a sessão do banco (mantido para compatibilidade de testes)."""
-    try:
-        norm_chat_id, session_uuid = normalize_session_id(session_id)
-        with SessionLocal() as db:
-            session_db = None
-            if norm_chat_id is not None:
-                session_db = db.query(Session).filter_by(chat_id=norm_chat_id).first()
-            if not session_db:
-                session_db = db.query(Session).filter_by(session_id=session_uuid).first()
-            if session_db:
-                return get_or_create_session_state(session_id)
-    except Exception:
-        pass
-    return None
-
-
-def clear_memory_session(session_id: str) -> None:
-    """Limpa a sessão no banco (mantido para compatibilidade de testes)."""
-    reset_game_session(session_id)
-
-
-def set_memory_session(session_id: str, state: GameState) -> None:
-    """Persiste a sessão no banco (mantido para compatibilidade de testes)."""
-    persist_session_state_to_db(state)
 
 
 def create_initial_rpg_state(
@@ -173,7 +147,7 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
             sender="Loomis",
             content=briefing,
             role="assistant",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
     )
     persist_session_state_to_db(state)
@@ -197,12 +171,6 @@ def normalize_session_id(identifier: int | str) -> tuple[int | None, uuid.UUID]:
         session_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, raw_str)
 
     return chat_id_int, session_uuid
-
-
-def resolve_session_uuid(session_id: str) -> uuid.UUID:
-    """Garante um UUID válido para chaves primárias do PostgreSQL."""
-    _, session_uuid = normalize_session_id(session_id)
-    return session_uuid
 
 
 def get_or_create_session_state(
