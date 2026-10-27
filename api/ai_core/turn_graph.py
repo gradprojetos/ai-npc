@@ -5,20 +5,15 @@ from langgraph.graph import StateGraph, START, END
 from api.schemas.rpg import GameState, Message
 from llm_gateway.client import LLMClient
 from api.motor_rpg.motor_rpg import resolve_hero_attack, resolve_monster_attack, get_cage_monster, create_hero
+from db.models import NPC
+from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
 
-FALLBACK_LOOMIS_PROMPT = (
-    "Você é Loomis, o lendário treinador da vila de Hesiod (sangue de ogro, forte, voz aguda e anasalada).\n"
-    "Personalidade: pragmático, enérgico, exigente, protetor com os recrutas. Nunca quebre o personagem.\n\n"
-    "[REGRAS DE CONDUTA]:\n"
-    "1. Você é APENAS o treinador Loomis. Você NUNCA decide se um monstro morreu ou sofreu dano (a verdade mecânica é do Dungeon Master).\n"
-    "2. Só comemore a derrota de uma fera se o contexto contiver '[MONSTRO DERROTADO]'. Se a fera tiver HP > 0, reaja a ela ainda viva!\n"
-    "3. Fale SEMPRE em PRIMEIRA PESSOA, de forma concisa (1 a 3 frases enérgicas), direta e protetora.\n"
-    "4. Responda apenas com a sua fala direta, sem rubricas narrativas entre asteriscos e sem prefixos como 'Loomis:'.\n"
-    "5. Formate seu texto com tags HTML aceitas pelo Telegram (<b>negrito</b>, <i>itálico</i>). NUNCA use Markdown."
-)
+# Buffers temporários de execução em memória por sessão
+_round_buffers: dict[str, list[str]] = {}
+_last_monster_targets: dict[str, str] = {}
 
 
 async def extract_d20(text: str) -> int | None:
@@ -125,7 +120,16 @@ async def combat_node(state: GameState) -> dict:
     if not state.monsters:
         state.monsters.append(get_cage_monster(1))
 
+    # Identifica o herói que está agindo com base no remetente da mensagem
     hero = state.players[0]
+    last_user_msg = next((m for m in reversed(state.recent_messages) if m.role == "user"), None)
+    if last_user_msg and state.players:
+        sender = last_user_msg.sender
+        for p in state.players:
+            if p.player_id == sender or (sender and sender in p.name):
+                hero = p
+                break
+
     # Identifica o monstro alvo (se houver mais de um e o jogador tiver citado o nome)
     monster = state.monsters[0]
     last_msg_lower = last_user_message.lower()
@@ -149,8 +153,7 @@ async def combat_node(state: GameState) -> dict:
         }
 
     initial_monster_name = monster.name
-    # initial_monster_cage = monster.cage_number
-    # initial_monster_ac = monster.ac
+    round_actions = _round_buffers.setdefault(state.session_id, [])
 
     # 1. Ataque do Herói atual (acumulado para o resumo da rodada)
     hero_res = resolve_hero_attack(hero=hero, monster=monster, d20=d20)
@@ -162,7 +165,7 @@ async def combat_node(state: GameState) -> dict:
     else:
         hero_action_text = f"errou o golpe! [Monstro HP: {monster.hp}/{monster.max_hp}]"
 
-    state.round_actions.append(
+    round_actions.append(
         f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name} e {hero_action_text}"
     )
 
@@ -177,7 +180,7 @@ async def combat_node(state: GameState) -> dict:
         next_cage = monster.cage_number + 1
         new_beast = get_cage_monster(next_cage)
         state.monsters.append(new_beast)
-        state.round_actions.append(f"• <b>{new_beast.name}</b> entrou na arena! [Monstro HP: {new_beast.hp}/{new_beast.max_hp}]")
+        round_actions.append(f"• <b>{new_beast.name}</b> entrou na arena! [Monstro HP: {new_beast.hp}/{new_beast.max_hp}]")
 
     # 3. Derrota do Monstro
     if monster.is_defeated:
@@ -192,11 +195,11 @@ async def combat_node(state: GameState) -> dict:
                     h.restore_full_hp()
                     healed.append(h.name)
             if healed:
-                state.round_actions.append(f"• Loomis curou {', '.join(healed)} com a poção!")
+                round_actions.append(f"• Loomis curou {', '.join(healed)} com a poção!")
 
             if monster.cage_number >= 4:
                 state.is_victory = True
-                state.round_actions.append("• Todas as 4 jaulas foram superadas!")
+                round_actions.append("• Todas as 4 jaulas foram superadas!")
             else:
                 next_cage = monster.cage_number + 1
                 next_beast = get_cage_monster(next_cage)
@@ -207,7 +210,7 @@ async def combat_node(state: GameState) -> dict:
 
     # 5. Verifica se a rodada terminou (todos os jogadores conscientes já declararam ação)
     total_active_heroes = len([h for h in state.players if not h.is_unconscious]) or 1
-    round_finished = len(state.round_actions) >= total_active_heroes or state.is_victory
+    round_finished = len(round_actions) >= total_active_heroes or state.is_victory
 
     if not round_finished:
         # Rodada ainda em andamento: não envia mensagem do DM nem do Loomis agora
@@ -216,23 +219,27 @@ async def combat_node(state: GameState) -> dict:
             "last_context": None,
             "players": state.players,
             "monsters": state.monsters,
-            "round_actions": state.round_actions,
             "is_victory": state.is_victory,
             "recent_messages": state.recent_messages,
         }
 
     # 6. Rodada Encerrada: Turno dos Monstros (cada fera viva ataca 1 vez)
-    dm_lines = ["<b>Dungeon Master:</b>"] + state.round_actions
-    state.round_actions = []  # Reseta o buffer da rodada
+    dm_lines = ["<b>Dungeon Master:</b>"] + round_actions
+    _round_buffers.pop(state.session_id, None)
 
     if not state.is_victory:
         alive_beasts = [m for m in state.monsters if not m.is_defeated]
         conscious_heroes = [h for h in state.players if not h.is_unconscious]
+        last_target_id = _last_monster_targets.get(state.session_id)
 
         for beast in alive_beasts:
             if not conscious_heroes:
                 break
-            target_hero = max(conscious_heroes, key=lambda h: h.hp)
+            # Regra canônica: priorizar maior HP, mas excluir o alvo atingido no turno anterior se houver outro herói consciente
+            candidates = [h for h in conscious_heroes if h.player_id != last_target_id] if len(conscious_heroes) > 1 else conscious_heroes
+            target_hero = max(candidates, key=lambda h: h.hp)
+            _last_monster_targets[state.session_id] = target_hero.player_id
+
             m_res = resolve_monster_attack(beast, target_hero)
 
             if m_res["is_critical"]:
@@ -256,7 +263,6 @@ async def combat_node(state: GameState) -> dict:
         "last_context": state.last_context,
         "players": state.players,
         "monsters": state.monsters,
-        "round_actions": state.round_actions,
         "is_victory": state.is_victory,
         "recent_messages": state.recent_messages,
     }
@@ -272,11 +278,15 @@ async def npc_node(state: GameState) -> dict:
             "recent_messages": state.recent_messages,
         }
 
-    effective_system_prompt = (
-        state.npcs[0].system_prompt
-        if state.npcs and state.npcs[0].system_prompt
-        else FALLBACK_LOOMIS_PROMPT
-    )
+    effective_system_prompt = state.npcs[0].system_prompt if state.npcs and state.npcs[0].system_prompt else ""
+    if not effective_system_prompt:
+        try:
+            with SessionLocal() as db:
+                db_npc = db.query(NPC).filter_by(name="Loomis").first()
+                if db_npc:
+                    effective_system_prompt = db_npc.system_prompt
+        except Exception as e:
+            logger.debug(f"Não foi possível carregar prompt do NPC do banco: {e}")
 
     monster_fell = "HP: 0/" in (state.last_context or "") or any(m.is_defeated for m in state.monsters)
     defeated_tag = "\n[MONSTRO DERROTADO]" if monster_fell else ""

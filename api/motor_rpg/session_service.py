@@ -22,23 +22,32 @@ from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-# Fallback em memória para execução rápida ou ambiente de testes/desconectado
-_MEMORY_SESSIONS: dict[str, GameState] = {}
-
 
 def get_memory_session(session_id: str) -> GameState | None:
-    """Recupera o estado em memória para uma sessão."""
-    return _MEMORY_SESSIONS.get(session_id)
-
-
-def set_memory_session(session_id: str, state: GameState) -> None:
-    """Salva o estado em memória para uma sessão."""
-    _MEMORY_SESSIONS[session_id] = state
+    """Recupera a sessão do banco (mantido para compatibilidade de testes)."""
+    try:
+        norm_chat_id, session_uuid = normalize_session_id(session_id)
+        with SessionLocal() as db:
+            session_db = None
+            if norm_chat_id is not None:
+                session_db = db.query(Session).filter_by(chat_id=norm_chat_id).first()
+            if not session_db:
+                session_db = db.query(Session).filter_by(session_id=session_uuid).first()
+            if session_db:
+                return get_or_create_session_state(session_id)
+    except Exception:
+        pass
+    return None
 
 
 def clear_memory_session(session_id: str) -> None:
-    """Remove a sessão do armazenamento em memória."""
-    _MEMORY_SESSIONS.pop(session_id, None)
+    """Limpa a sessão no banco (mantido para compatibilidade de testes)."""
+    reset_game_session(session_id)
+
+
+def set_memory_session(session_id: str, state: GameState) -> None:
+    """Persiste a sessão no banco (mantido para compatibilidade de testes)."""
+    persist_session_state_to_db(state)
 
 
 def create_initial_rpg_state(
@@ -60,7 +69,7 @@ def create_initial_rpg_state(
         except Exception:
             pass
 
-    state = GameState(
+    return GameState(
         session_id=session_id,
         location="Clareira de Treino em Hesiod",
         players=players,
@@ -70,8 +79,6 @@ def create_initial_rpg_state(
         recent_messages=[],
         is_victory=False,
     )
-    set_memory_session(session_id, state)
-    return state
 
 
 def select_hero_for_player(
@@ -124,8 +131,7 @@ def select_hero_for_player(
     # Ordena canonicamente a iniciativa (#1 a #5)
     state.players.sort(key=lambda h: get_hero_card_number(h.name))
 
-    # Persiste na memória e no banco
-    set_memory_session(session_id, state)
+    # Persiste diretamente no banco como Single Source of Truth
     persist_session_state_to_db(state)
 
     msg = (
@@ -149,11 +155,6 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
         return False, "Nenhum recruta foi alistado ainda! Usem <code>/select &lt;1-5&gt;</code> antes de <code>/done</code>.", state
 
     state.is_recruiting = False
-    chat_id_int, session_uuid = normalize_session_id(session_id)
-    set_memory_session(session_id, state)
-    set_memory_session(str(session_uuid), state)
-    if chat_id_int is not None:
-        set_memory_session(str(chat_id_int), state)
     persist_session_state_to_db(state)
 
     first_hero = state.players[0]
@@ -199,7 +200,7 @@ def get_or_create_session_state(
     user_info: dict | None = None,
     default_archetype: str | None = None,
 ) -> GameState:
-    """Recupera o GameState do PostgreSQL ou da memória, ou cria uma nova partida."""
+    """Recupera o GameState do PostgreSQL (Single Source of Truth) ou cria uma nova partida."""
     chat_id_int, session_uuid = normalize_session_id(session_id)
     if chat_id_int is None and user_info and user_info.get("chat_id") is not None:
         try:
@@ -207,16 +208,7 @@ def get_or_create_session_state(
         except (ValueError, TypeError):
             pass
 
-    # 1. Tenta recuperar da memória primeiro (mantém o estado vivo, como is_recruiting e turnos)
-    cached = (
-        get_memory_session(session_id)
-        or (get_memory_session(str(chat_id_int)) if chat_id_int is not None else None)
-        or get_memory_session(str(session_uuid))
-    )
-    if cached:
-        return cached
-
-    # 2. Tenta carregar do banco de dados relacional normalizado
+    # Carrega do banco de dados relacional
     try:
         with SessionLocal() as db:
             session_db = None
@@ -226,7 +218,7 @@ def get_or_create_session_state(
                 session_db = db.query(Session).filter_by(session_id=session_uuid).first()
 
             if session_db:
-                # Carrega heróis da sessão
+                # Carrega heróis da sessão e preserva iniciativa canônica (#1 a #5)
                 db_heroes = db.query(Hero).filter_by(session_id=session_db.session_id).all()
                 players = [
                     HeroState(
@@ -242,6 +234,7 @@ def get_or_create_session_state(
                     )
                     for h in db_heroes
                 ]
+                players.sort(key=lambda h: get_hero_card_number(h.name))
 
                 # Carrega monstros da sessão
                 db_monsters = db.query(Monster).filter_by(session_id=session_db.session_id).all()
@@ -278,14 +271,14 @@ def get_or_create_session_state(
                     for msg in reversed(db_messages)
                 ]
 
-                # Carrega persona do Loomis de npcs se existir
+                # Carrega persona do Loomis de npcs
                 db_npc = db.query(NPC).filter_by(name="Loomis").first()
                 system_prompt = db_npc.system_prompt if db_npc else ""
 
                 # Se já houver mensagens ou heróis alistados, combate já saiu do recrutamento
                 is_recruiting = len(db_messages) == 0 and len(players) == 0
 
-                state = GameState(
+                return GameState(
                     session_id=str(session_db.session_id),
                     location=session_db.location,
                     players=players,
@@ -296,23 +289,16 @@ def get_or_create_session_state(
                     is_recruiting=is_recruiting,
                     is_victory=session_db.is_victory,
                 )
-                set_memory_session(session_id, state)
-                set_memory_session(str(session_db.session_id), state)
-                if chat_id_int is not None:
-                    set_memory_session(str(chat_id_int), state)
-                return state
     except Exception as e:
         logger.debug(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
 
-    # 3. Cria nova sessão inicial
+    # Cria nova sessão inicial caso não exista no banco
     initial_hero = None
     if default_archetype:
         player_id = str(user_info.get("player_id") or chat_id_int or "player_1") if user_info else "player_1"
         initial_hero = create_hero(default_archetype, player_id=player_id)
 
     new_state = create_initial_rpg_state(session_id=session_id, initial_hero=initial_hero)
-
-    # Tenta persistir no banco relacional
     persist_session_state_to_db(new_state, chat_id=chat_id_int)
     return new_state
 
@@ -424,7 +410,7 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
 
 
 def reset_game_session(identifier: int | str) -> bool:
-    """Apaga completamente a sessão do jogo (arena, monstros, todos os heróis e histórico) no banco e na memória."""
+    """Apaga completamente a sessão do jogo (arena, monstros, todos os heróis e histórico) no banco."""
     logger.info(f"Resetando sessão completa de jogo para identifier={identifier}")
     cleared = False
     chat_id_int, session_uuid = normalize_session_id(identifier)
@@ -446,19 +432,6 @@ def reset_game_session(identifier: int | str) -> bool:
             db.commit()
     except Exception as e:
         logger.warning(f"Erro ao resetar sessão no banco: {e}")
-
-    # Limpa da memória todas as chaves associadas a essa sessão
-    keys_to_clear = {str(identifier), str(session_uuid)}
-    if chat_id_int is not None:
-        keys_to_clear.add(str(chat_id_int))
-
-    for k in keys_to_clear:
-        clear_memory_session(k)
-
-    for sid, state in list(_MEMORY_SESSIONS.items()):
-        if sid in keys_to_clear or any(p.player_id in keys_to_clear for p in state.players):
-            clear_memory_session(sid)
-            cleared = True
 
     return cleared
 
