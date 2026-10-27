@@ -14,6 +14,7 @@ llm_client = LLMClient()
 # Buffers temporários de execução em memória por sessão
 _round_buffers: dict[str, list[str]] = {}
 _last_monster_targets: dict[str, str] = {}
+_exploration_counters: dict[str, int] = {}
 
 
 async def extract_d20(text: str) -> int | None:
@@ -39,15 +40,17 @@ async def extract_d20(text: str) -> int | None:
 
 
 async def classify_intent(text: str) -> str:
-    """Classifica a intenção da mensagem via LLM ('combat' ou 'tactical_advice')."""
+    """Classifica a intenção da mensagem via LLM ('combat', 'tactical_advice' ou 'exploration')."""
     if not text.strip():
-        return "tactical_advice"
+        return "exploration"
 
     prompt = (
-        "Você é o classificador de ações de um RPG de mesa textual.\n"
-        "Analise a mensagem do jogador e decida se a ação é de COMBATE (atacar, golpear, atirar flecha, magia ofensiva, rolar dados de ataque) "
-        "ou se é CONSELHO TÁTICO / CONVERSA (pedir dica, perguntar fraquezas, tirar dúvidas, conversar com o treinador).\n"
-        "Responda APENAS 'combat' ou 'tactical_advice'."
+        "Você é o classificador de intenções de um RPG de mesa textual.\n"
+        "Classifique a mensagem do jogador em estritamente UMA das 3 categorias:\n"
+        "1. 'combat': Ações de ataque, golpes, tiros, magias ofensivas, dados (d20), ou confirmação de prontidão para iniciar a luta / abrir jaula (ex: 'estamos prontos', 'pode abrir', 'vamos lutar', 'puxa a alavanca', 'bora').\n"
+        "2. 'tactical_advice': Perguntas sobre regras de combate, fraquezas do monstro atual ou conselho sobre como usar poderes da carta de herói.\n"
+        "3. 'exploration': Conversa livre, perguntas sobre a vila de Hesiod, investigar a cabana, caldeirão de poção, ferramentas, lore ou passado de Loomis.\n\n"
+        "Responda APENAS: 'combat', 'tactical_advice' ou 'exploration'."
     )
     try:
         response = await llm_client.generate_reply(
@@ -59,46 +62,92 @@ async def classify_intent(text: str) -> str:
         decision = response.strip().lower()
         if "combat" in decision:
             return "combat"
-        return "tactical_advice"
+        if "tactical" in decision or "advice" in decision:
+            return "tactical_advice"
+        return "exploration"
     except Exception as e:
         logger.warning(f"Falha ao classificar intenção via LLM ({repr(e)}), aplicando fallback por regex.")
-        # Fallback por prefixos de ataque/combate
-        combat_prefixes = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano|d20|rol|tiro)\w*"
-        if re.search(combat_prefixes, text, re.IGNORECASE) or extract_custom_d20_roll(text) is not None:
+        d20 = await extract_d20(text)
+        if d20 is not None:
             return "combat"
-        return "tactical_advice"
+        ready_pattern = r"\b(?:pront[oa]s?|vamos lutar|abrir|abre a jaula|puxa a alavanca|bora|começar)\b"
+        combat_pattern = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano)\w*"
+        if re.search(ready_pattern, text, re.IGNORECASE) or re.search(combat_pattern, text, re.IGNORECASE):
+            return "combat"
+        tactical_pattern = r"\b(?:fraqueza|dica|conselho|como us|ponto fraco|poder|habilidade)\b"
+        if re.search(tactical_pattern, text, re.IGNORECASE):
+            return "tactical_advice"
+        return "exploration"
 
 
 def tactical_advice_node(state: GameState) -> dict:
-    """Nó para preparar conselho pedagógico ou dica tática sobre o monstro atual.
-
-    Ação Livre: Não consome turno nem rotaciona a lista de jogadores.
-    """
+    """Nó para conselho tático pedagógico e advertência anti-dispersão durante o combate."""
     logger.info("Executando nó de conselho tático...")
     hero = state.players[0] if state.players else None
-    monster = state.monsters[0] if state.monsters else None
+    monster = next((m for m in state.monsters if not m.is_defeated), None)
 
-    context_parts: list[str] = [
-        "Ação Livre (Conselho Tático): O recruta está pedindo orientação ou conversando."
-    ]
+    last_msg = state.get_last_user_message().lower()
+    is_dispersion = any(w in last_msg for w in ["cabana", "passear", "riacho", "olhar", "investigar", "procurar", "sair"])
 
-    if hero:
+    context_parts: list[str] = []
+    if monster and is_dispersion:
         context_parts.append(
-            f"Recruta ativo: {hero.name} ({hero.class_name}). Poder especial: '{hero.special_power}'."
+            f"Alerta Anti-Dispersão: O recruta tentou dispersão enquanto a fera está atacando!\n"
+            f"Instrução para Loomis: Adverta energicamente em personagem: 'Atenção, recruta! O {monster.name} "
+            f"está investindo contra você com mandíbulas abertas, não é hora de passear! Mantenha a guarda e ataque!'"
         )
+    else:
+        context_parts.append("Ação Livre (Conselho Tático): O recruta está pedindo orientação ou tirando dúvidas de combate.")
+        if hero:
+            context_parts.append(
+                f"Recruta ativo: {hero.name} ({hero.class_name}). Poder especial: '{hero.special_power}'."
+            )
+        if monster and not monster.is_defeated:
+            abilities_str = ", ".join(monster.abilities) if monster.abilities else "nenhuma habilidade incomum"
+            context_parts.append(
+                f"Fera na arena: {monster.name} (Jaula {monster.cage_number}, CA {monster.ac}, HP {monster.hp}/{monster.max_hp}). "
+                f"Habilidades da criatura: {abilities_str}."
+            )
+            context_parts.append(
+                "Instrução para Loomis: Ofereça uma dica tática enérgica e prática explicando como aproveitar "
+                "o poder especial do recruta contra os pontos fracos da criatura, incentivando o próximo ataque."
+            )
+        elif state.is_victory:
+            context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
 
-    if monster and not monster.is_defeated:
-        abilities_str = ", ".join(monster.abilities) if monster.abilities else "nenhuma habilidade incomum"
+    last_context = "\n".join(context_parts)
+    state.last_context = last_context
+    return {
+        "last_context": last_context,
+    }
+
+
+def exploration_node(state: GameState) -> dict:
+    """Nó para roleplay livre, investigação do cenário e diálogo com Loomis na clareira."""
+    logger.info("Executando nó de exploração...")
+    count = _exploration_counters.get(state.session_id, 0) + 1
+    _exploration_counters[state.session_id] = count
+
+    context_parts = ["Ação Livre (Roleplay e Exploração na Clareira de Treino):"]
+
+    if count >= 7:
+        beast = state.monsters[0] if state.monsters else get_cage_monster(1)
+        state.location = f"Arena de Hesiod — Jaula {beast.cage_number} Aberta"
+        _exploration_counters[state.session_id] = 0
         context_parts.append(
-            f"Fera na arena: {monster.name} (Jaula {monster.cage_number}, CA {monster.ac}, HP {monster.hp}/{monster.max_hp}). "
-            f"Habilidades da criatura: {abilities_str}."
+            f"Gatilho Forçado de Combate: Loomis perdeu a paciência com o grupo após {count} mensagens de conversa!\n"
+            f"Ele puxa a alavanca da Jaula 1 por conta própria, solta o {beast.name} na arena e grita para os recrutas assumirem formação de batalha imediatamente!"
         )
+    elif count >= 4:
         context_parts.append(
-            "Instrução para Loomis: Ofereça uma dica tática enérgica e prática explicando como aproveitar "
-            "o poder especial do recruta contra os pontos fracos da criatura, incentivando o próximo ataque."
+            "Loomis impaciente: Responda brevemente ao que foi perguntado, mas corte a conversa mole e pressione com firmeza: "
+            "'Chega de conversa mole e de passar a mão na madeira da cabana, recrutas! As feras estão farejando o almoço. Vamos abrir a Jaula 1 ou vocês vão amarelar?'"
         )
-    elif state.is_victory:
-        context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
+    else:
+        context_parts.append(
+            "Loomis acolhedor: Responda com simpatia e experiência de veterano às perguntas sobre a vila de Hesiod, "
+            "as ferramentas, a cabana rústica e o caldeirão de poção revigorante de menta e limão. Lembre-os amigavelmente de avisar quando estiverem prontos."
+        )
 
     last_context = "\n".join(context_parts)
     state.last_context = last_context
@@ -138,11 +187,18 @@ async def combat_node(state: GameState) -> dict:
             monster = m
             break
 
-    # Se o d20 não foi informado: sinaliza para Loomis solicitar a rolagem física
+    # Abre a jaula para combate se ainda estiver na fase de exploração
+    if "Aberta" not in (state.location or ""):
+        cage_num = monster.cage_number if monster else 1
+        state.location = f"Arena de Hesiod — Jaula {cage_num} Aberta"
+        _exploration_counters[state.session_id] = 0
+
+    # Se o d20 não foi informado: sinaliza abertura da jaula e pede rolagem física
     if d20 is None:
         lines = [
             "<b>Dungeon Master:</b>",
-            f"• <b>{hero.name}</b> preparou um ataque, mas nenhuma rolagem de dado válida foi informada!",
+            f"• A Jaula {monster.cage_number} foi aberta e <b>{monster.name}</b> entrou na arena [HP: {monster.hp}/{monster.max_hp} | CA: {monster.ac}]!",
+            f"• <b>{hero.name}</b>, declare sua ação e o valor do seu d20 físico (ex: <i>\"ataco com 17\"</i>)!",
         ]
         state.last_context = "\n".join(lines)
         return {
@@ -291,11 +347,21 @@ async def npc_node(state: GameState) -> dict:
     monster_fell = "HP: 0/" in (state.last_context or "") or any(m.is_defeated for m in state.monsters)
     defeated_tag = "\n[MONSTRO DERROTADO]" if monster_fell else ""
 
-    prompt_context = (
-        f"Contexto do Treino e Regras:\n{state.last_context}{defeated_tag}\n\nMensagem do jogador: {last_user_message}"
-        if state.last_context
-        else last_user_message
-    )
+    # Memória de curto prazo seletiva: exploração recebe histórico recente; combate apenas resumo mecânico
+    is_exploration = "Roleplay e Exploração" in (state.last_context or "")
+    if is_exploration and len(state.recent_messages) > 1:
+        dialogue_history = "\n".join(
+            f"{m.sender}: {m.content}" for m in state.recent_messages[-6:-1]
+        )
+        prompt_context = (
+            f"Contexto do Treino e Ambiente:\n{state.last_context}\n\n"
+            f"Diálogo recente:\n{dialogue_history}\n\n"
+            f"Mensagem atual do jogador: {last_user_message}"
+        )
+    elif state.last_context:
+        prompt_context = f"Contexto do Treino e Regras:\n{state.last_context}{defeated_tag}\n\nMensagem do jogador: {last_user_message}"
+    else:
+        prompt_context = last_user_message
 
     logger.info(f"Gerando resposta do Loomis via LLM para: '{prompt_context}'")
     try:
@@ -307,10 +373,10 @@ async def npc_node(state: GameState) -> dict:
     except Exception as e:
         logger.warning(f"Falha ao gerar fala do Loomis via LLM ({repr(e)}), usando fala padrão de treino.")
         if state.is_victory:
-            resposta_texto = "Vocês conseguiram, recrutas! Todas as jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
+            resposta_texto = "Vocês conseguiram, recrutas! Todas as 4 jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
         elif monster_fell:
             resposta_texto = "A fera caiu! Excelente golpe, recrutas! Mas mantenham o foco que a próxima jaula está à frente!"
-        elif "nenhuma rolagem de dado válida" in (state.last_context or ""):
+        elif "nenhuma rolagem de dado válida" in (state.last_context or "") or "declare sua ação e o valor" in (state.last_context or ""):
             resposta_texto = "De nada adianta empunhar a arma sem rolar os dados! Jogue seu d20 na mesa e me diga quanto tirou!"
         else:
             resposta_texto = "Fiquem atentos às fraquezas da fera e mantenham a formação! Hesiod conta com a coragem de vocês!"
@@ -339,8 +405,17 @@ async def npc_node(state: GameState) -> dict:
 
 
 async def route_intent(state: GameState) -> str:
-    """Roteia o fluxo entre combate e dica tática chamando a classificação."""
-    return await classify_intent(state.get_last_user_message())
+    """Roteia o fluxo entre combate, conselho tático e exploração com trava anti-dispersão."""
+    last_user_message = state.get_last_user_message()
+    intent = await classify_intent(last_user_message)
+
+    # Trava de Combate Ativo (Anti-Dispersão):
+    # Se houver fera viva na arena com Jaula aberta, intercepta tentativa de exploração livre
+    beast_in_arena = any(not m.is_defeated for m in state.monsters) and "Aberta" in (state.location or "")
+    if intent == "exploration" and beast_in_arena:
+        return "tactical_advice"
+
+    return intent
 
 
 def build_turn_graph():
@@ -350,19 +425,22 @@ def build_turn_graph():
     # Registro dos nós
     workflow.add_node("combat", combat_node)
     workflow.add_node("tactical_advice", tactical_advice_node)
+    workflow.add_node("exploration", exploration_node)
     workflow.add_node("npc", npc_node)
 
-    # Bifurcação direta a partir do START
+    # Bifurcação a partir do START
     workflow.add_conditional_edges(
         START,
         route_intent,
         {
             "combat": "combat",
             "tactical_advice": "tactical_advice",
+            "exploration": "exploration",
         },
     )
     workflow.add_edge("combat", "npc")
     workflow.add_edge("tactical_advice", "npc")
+    workflow.add_edge("exploration", "npc")
     workflow.add_edge("npc", END)
 
     return workflow.compile()

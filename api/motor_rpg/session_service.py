@@ -155,19 +155,29 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
         return False, "Nenhum recruta foi alistado ainda! Usem <code>/select &lt;1-5&gt;</code> antes de <code>/done</code>.", state
 
     state.is_recruiting = False
-    persist_session_state_to_db(state)
-
-    first_hero = state.players[0]
-    monster = state.monsters[0] if state.monsters else get_cage_monster(1)
 
     briefing = (
-        "<b>Treinamento Iniciado — Jaula 1 Aberta!</b>\n\n"
-        f"Loomis gira a manivela enferrujada e as grades sobem com um rangido metálico!\n"
-        f"<b>{monster.name}</b> entra na arena rosnando [HP: {monster.hp}/{monster.max_hp} | CA: {monster.ac}].\n\n"
-        f"<b>Ordem de Ação:</b>\n"
-        + "\n".join(f"{i+1}. <b>{p.name}</b> ({p.class_name})" for i, p in enumerate(state.players))
-        + f"\n\n👉 Vez de <b>{first_hero.name}</b>! Declare sua ação no chat (ex: <i>\"ataco com 17\"</i>) ou peça conselho ao Loomis."
+        "<b>Dungeon Master:</b>\n"
+        "O sol corta a floresta densa na clareira isolada atrás da cabana de treino. "
+        "Quatro pesadas jaulas de ferro reforçado repousam sob as árvores, e um som abafado de garras "
+        "arranhando a pedra ecoa pela mata. À frente de vocês, o lendário treinador Loomis cruza os braços "
+        "fortes e fita os novos recrutas de Hesiod.\n\n"
+        "<b>Loomis:</b>\n"
+        "\"Aí estão vocês! Escolheram bem as armas. Três meses de suor nesta vila levaram a este dia. "
+        "Olhem ao redor e conversem comigo se quiserem, mas não se acomodem: quando estiverem prontos "
+        "para a primeira fera, me digam 'estamos prontos' para eu puxar a alavanca!\""
     )
+
+    state.recent_messages.append(
+        Message(
+            sender="Loomis",
+            content=briefing,
+            role="assistant",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+    persist_session_state_to_db(state)
+
     return True, briefing, state
 
 
