@@ -5,8 +5,6 @@ from api.ai_core.turn_graph import (
     combat_node,
     npc_node,
     tactical_advice_node,
-    format_heroes_hud,
-    DEFAULT_LOOMIS_PROMPT,
 )
 from telegram_bot.telegram_service import format_to_telegram_html
 
