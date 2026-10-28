@@ -5,8 +5,7 @@ from langgraph.graph import StateGraph, START, END
 from api.schemas.rpg import GameState, Message
 from llm_gateway.client import LLMClient
 from api.motor_rpg.motor_rpg import resolve_hero_attack, resolve_monster_attack, get_cage_monster, create_hero
-from db.models import NPC
-from db.session import SessionLocal
+from api.ai_core.prompts import EXPLORATION_PROMPT, COMBAT_PROMPT, TACTICAL_PROMPT
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
@@ -45,11 +44,11 @@ async def classify_intent(text: str) -> str:
         return "exploration"
 
     prompt = (
-        "Você é o classificador de intenções de um RPG de mesa textual.\n"
+        "Você é o classificador de intenções de um RPG de mesa textual infantil/educacional.\n"
         "Classifique a mensagem do jogador em estritamente UMA das 3 categorias:\n"
-        "1. 'combat': Ações de ataque, golpes, tiros, magias ofensivas, dados (d20), ou confirmação de prontidão para iniciar a luta / abrir jaula (ex: 'estamos prontos', 'pode abrir', 'vamos lutar', 'puxa a alavanca', 'bora').\n"
+        "1. 'combat': Declaração explícita de ataque mecânico, golpes, tiros, magias ofensivas, dados (d20), ou confirmação explícita de prontidão para iniciar a luta (ex: 'estamos prontos', 'pode começar', 'vamos lutar', 'puxa a alavanca'). ATENÇÃO: Ações narrativas ou tentativas de roleplay fora de hora (ex: 'tento abrir a jaula na surdina', 'quero soltar o monstro', 'mexer na tranca') são 'exploration', NUNCA 'combat'.\n"
         "2. 'tactical_advice': Perguntas sobre regras de combate, fraquezas do monstro atual ou conselho sobre como usar poderes da carta de herói.\n"
-        "3. 'exploration': Conversa livre, perguntas sobre a vila de Hesiod, investigar a cabana, caldeirão de poção, ferramentas, lore ou passado de Loomis.\n\n"
+        "3. 'exploration': Conversa livre, perguntas sobre a vila de Hesiod, investigar a cabana, caldeirão de poção, ferramentas, lore ou qualquer ação narrativa/roleplay na clareira.\n\n"
         "Responda APENAS: 'combat', 'tactical_advice' ou 'exploration'."
     )
     try:
@@ -70,7 +69,7 @@ async def classify_intent(text: str) -> str:
         d20 = await extract_d20(text)
         if d20 is not None:
             return "combat"
-        ready_pattern = r"\b(?:pront[oa]s?|vamos lutar|abrir|abre a jaula|puxa a alavanca|bora|começar)\b"
+        ready_pattern = r"\b(?:estamos pront[oa]s?|vamos lutar|puxa a alavanca|bora começar|começar treino)\b"
         combat_pattern = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano)\w*"
         if re.search(ready_pattern, text, re.IGNORECASE) or re.search(combat_pattern, text, re.IGNORECASE):
             return "combat"
@@ -115,10 +114,14 @@ def tactical_advice_node(state: GameState) -> dict:
         elif state.is_victory:
             context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
 
+    if state.npcs:
+        state.npcs[0].system_prompt = TACTICAL_PROMPT
+
     last_context = "\n".join(context_parts)
     state.last_context = last_context
     return {
         "last_context": last_context,
+        "npcs": state.npcs,
     }
 
 
@@ -149,16 +152,23 @@ def exploration_node(state: GameState) -> dict:
             "as ferramentas, a cabana rústica e o caldeirão de poção revigorante de menta e limão. Lembre-os amigavelmente de avisar quando estiverem prontos."
         )
 
+    if state.npcs:
+        state.npcs[0].system_prompt = EXPLORATION_PROMPT
+
     last_context = "\n".join(context_parts)
     state.last_context = last_context
     return {
         "last_context": last_context,
+        "npcs": state.npcs,
     }
 
 
 async def combat_node(state: GameState) -> dict:
     """Nó determinístico para resolução do combate, turno do monstro e resumo mecânico."""
     logger.info("Executando nó de combate determinístico...")
+
+    if state.npcs:
+        state.npcs[0].system_prompt = COMBAT_PROMPT
 
     last_user_message = state.get_last_user_message()
     d20 = await extract_d20(last_user_message)
@@ -207,6 +217,7 @@ async def combat_node(state: GameState) -> dict:
             "players": state.players,
             "monsters": state.monsters,
             "recent_messages": state.recent_messages,
+            "npcs": state.npcs,
         }
 
     initial_monster_name = monster.name
@@ -325,6 +336,7 @@ async def combat_node(state: GameState) -> dict:
         "monsters": state.monsters,
         "is_victory": state.is_victory,
         "recent_messages": state.recent_messages,
+        "npcs": state.npcs,
     }
 
 
@@ -338,15 +350,11 @@ async def npc_node(state: GameState) -> dict:
             "recent_messages": state.recent_messages,
         }
 
-    effective_system_prompt = state.npcs[0].system_prompt if state.npcs and state.npcs[0].system_prompt else ""
-    if not effective_system_prompt:
-        try:
-            with SessionLocal() as db:
-                db_npc = db.query(NPC).filter_by(name="Loomis").first()
-                if db_npc:
-                    effective_system_prompt = db_npc.system_prompt
-        except Exception as e:
-            logger.debug(f"Não foi possível carregar prompt do NPC do banco: {e}")
+    effective_system_prompt = (
+        state.npcs[0].system_prompt
+        if state.npcs and state.npcs[0].system_prompt
+        else EXPLORATION_PROMPT
+    )
 
     monster_fell = "HP: 0/" in (state.last_context or "") or any(m.is_defeated for m in state.monsters)
     defeated_tag = "\n[MONSTRO DERROTADO]" if monster_fell else ""

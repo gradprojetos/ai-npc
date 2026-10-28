@@ -17,6 +17,7 @@ from api.schemas.rpg import (
     MonsterState,
     NPCState,
 )
+from api.ai_core.prompts import EXPLORATION_PROMPT
 from db.models import NPC, Hero, Monster, Session
 from db.models import Message as MessageDB
 from db.session import SessionLocal
@@ -33,15 +34,7 @@ def create_initial_rpg_state(
     cage_1_monster = get_cage_monster(1)
     players = [initial_hero] if initial_hero else []
 
-    system_prompt = npc_prompt or ""
-    if not system_prompt:
-        try:
-            with SessionLocal() as db:
-                db_npc = db.query(NPC).filter_by(name="Loomis").first()
-                if db_npc:
-                    system_prompt = db_npc.system_prompt
-        except Exception:
-            pass
+    system_prompt = npc_prompt or EXPLORATION_PROMPT
 
     return GameState(
         session_id=session_id,
@@ -249,9 +242,7 @@ def get_or_create_session_state(
                     for msg in reversed(db_messages)
                 ]
 
-                # Carrega persona do Loomis de npcs
-                db_npc = db.query(NPC).filter_by(name="Loomis").first()
-                system_prompt = db_npc.system_prompt if db_npc else ""
+                system_prompt = EXPLORATION_PROMPT
 
                 # Se já houver mensagens salvas, a sessão já saiu da fase de recrutamento (/done foi acionado)
                 is_recruiting = len(db_messages) == 0
