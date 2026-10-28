@@ -24,7 +24,6 @@ services:
   adminer:
     image: adminer:latest
     container_name: npc_adminer
-    restart: always
     ports:
       - "8081:8080"
     networks:
