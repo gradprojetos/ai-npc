@@ -1,167 +1,127 @@
-# Roadmap de Implementação: Modo Exploration & Refinamento de Gameplay (next_steps.md)
+# Plano de Clean Up Final & Remoção de AI Slop (`refactor/final-cleanup`)
 
-Este documento estabelece o plano de ação para **outubro**, com foco em **features de negócio, roleplay e jogabilidade**, pausando a integração de Langfuse e Nvidia Guardrails. Enquanto o Murillo (E2) assume os guardrails determinísticos por regex e infraestrutura, este roadmap detalha a correção de débitos arquiteturais (fixes preliminares) e a criação do **Modo Exploration**.
-
----
-
-## 0. Fixes Preliminares (Débitos Arquiteturais & Estado 1:1 com o Banco)
-
-Antes de implementar as novas features de exploração, devemos sanar débitos técnicos que violam a fidelidade do modelo ao banco de dados:
-
-### Fix 1: Remover `round_actions` do `GameState` (Modelo 1:1 com PostgreSQL)
-* **Problema:** `round_actions` foi inserido no schema Pydantic `GameState`, mas não existe na tabela `sessions` do PostgreSQL, quebrando a paridade 1:1 com o banco relacional.
-* **Solução:**
-  * Remover o campo `round_actions` de [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py).
-  * Isolar o buffer de ações da rodada em um estado temporário de execução ou em um gerenciador de rodada dedicado, mantendo o `GameState` estritamente fiel ao schema do banco.
-
-### Fix 2: Eliminar o Anti-Pattern de Cache Global (`_MEMORY_SESSIONS`)
-* **Problema:** O dicionário global em memória (`_MEMORY_SESSIONS` em `session_service.py`) gera inconsistência entre instâncias, mascara acessos ao banco e pode reter estados defasados.
-* **Solução:**
-  * Tratar o **PostgreSQL como a fonte única da verdade (Single Source of Truth)**.
-  * Carregar e persistir o `GameState` diretamente via transações do SQLAlchemy, eliminando a dependência de dicionários globais estáticos em processo.
-
-### Fix 3: Memória de Curto Prazo Seletiva (Histórico Focado em Exploração)
-* **Diagnóstico:** Passar histórico longo de mensagens durante o **Combate** é desperdício de tokens e aumenta o risco de alucinação (no combate, o modelo só precisa saber o que rolou no round atual via bloco mecânico do Dungeon Master).
-* **Solução:**
-  * **Em `combat`:** O LLM recebe apenas o resumo determinístico do round atual (`last_context`) e a última ação.
-  * **Em `tactical_advice`:** Foco na dúvida pontual sobre o monstro e a classe ativa.
-  * **Em `exploration`:** **Aqui sim** injeta o histórico recente de mensagens (`recent_messages`), pois no roleplay conversacional o modelo precisa acompanhar o diálogo (ex.: *"E o que tem dentro dela?"* referenciando a cabana citada na mensagem anterior).
-
-### Fix 4: Remover Fallback de Prompt Hardcoded no Código (`FALLBACK_LOOMIS_PROMPT`)
-* **Problema:** Manter strings de prompt estáticas no código Python gera redundância e mascara a leitura real do banco. Como o jogo depende 100% do PostgreSQL para persistir sessões e mensagens, o fallback de código é ilusório (se o banco cair, o jogo já não funciona).
-* **Solução:**
-  * Remover o `FALLBACK_LOOMIS_PROMPT` de [`api/ai_core/turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py).
-  * O prompt deve ser recuperado estritamente da tabela `npcs` via SQLAlchemy.
-  * O lore de Hesiod e as instruções do modo de exploração residirão **diretamente no `system_prompt` do NPC Loomis na tabela `npcs`**, sem necessidade de criar tabelas extras dedicadas a lore.
-
-### Fix 5: Identificação Correta do Herói por Jogador e Alvo do Monstro (Bug de HP Unilateral)
-* **Problema (Mesmo após o commit `d4cee24`):** O jogo continuava atribuindo ataques e focando o contra-ataque sempre no mesmo herói por duas causas raízes:
-  1. **Falta de persistência da ordem de iniciativa:** O `state.rotate_players()` só girava a fila em memória RAM. Ao recarregar a sessão do banco de dados a cada mensagem (`db.query(HeroDB)`), o primeiro da lista (`state.players[0]`) sempre resetava para o mesmo registro.
-  2. **Ignorava o remetente real do Telegram:** O `combat_node` assumia que o atacante era o `state.players[0]`, sem checar quem de fato enviou a mensagem (`user_id` / `telegram_id` em `user_info`). Se o jogador com a Raen falasse fora da ordem imaginada, o golpe ainda saía no nome do Jorick.
-  3. **Foco viciado do Monstro:** O monstro atacava apenas usando `max(hp)`, batendo repetidamente no herói com mais vida inicial (ex.: Raen com 7 HP) até a vida dele cair, violando a regra canônica de *"evitar focar na mesma vítima duas vezes seguidas"*.
-* **Solução:**
-  * No `turn_graph.py` e `orchestrator.py`, identificar o herói que está agindo comparando o remetente da mensagem (`user_info.get("telegram_id")` ou `player_id`) com os registros de `state.players`.
-  * Garantir que o ataque seja debitado no histórico em nome do personagem do jogador real.
-  * No contra-ataque da criatura, implementar a regra canônica: priorizar maior HP, mas **excluir o alvo atingido no turno anterior** se houver outro herói consciente na arena.
+Este documento mapeia todos os *code smells*, *AI slop*, redundâncias, problemas de fronteira arquitetural e bugs ocultos identificados na varredura completa do repositório, estruturando o plano de limpeza final antes da revisão manual de código.
 
 ---
 
-## 1. Visão Geral: Os Três Modos de Jogo
+## 0. O Que Já Foi Consolidado Nesta Branch
 
-| Modo | Objetivo | Mecânica / Regras | Comportamento do Sistema |
-| :--- | :--- | :--- | :--- |
-| **`exploration`** *(Novo)* | Roleplaying livre, imersão no lore de Hesiod, investigação de pistas e diálogo com Loomis. | **Livre / Sem iniciativa:** Não exige d20, não desconta HP, não rotaciona a fila de jogadores. | **Narrador / Loomis (Roleplay):** Descreve ambiente sensorial e responde como mentor experiente. |
-| **`tactical_advice`** | Orientação tática e esclarecimento de poderes especiais durante a preparação ou luta. | **Ação Livre:** Perguntas sobre pontos fracos da fera atual ou como aplicar regras posicionais. | **Loomis (Tutor):** Enérgico e direto, incentivando a próxima jogada sem gastar o turno. |
-| **`combat`** | Resolução mecânica estrita de confronto contra as feras das 4 jaulas. | **Turno Rígido com d20:** Exige rolagem física de dado, cálculo determinístico de CA, dano e contra-ataque. | **Dungeon Master (HUD)** + **Loomis:** Bloco mecânico inquestionável + fala de reação em 1ª pessoa. |
-
-> [!NOTE]
-> **Sem alteração no GameState do Banco:** O modo de jogo não exige novas colunas ou migrações relacionais no banco de dados. A alternância é governada por **classificação por mensagem ("LLM as a judge")** e pelo contexto da sessão (ex: se há monstros ativos na arena).
+Antes desta etapa, a branch já incorporou duas melhorias estruturais importantes que **devem ser preservadas**:
+1. **Prompts Modulares por Nó ([`api/ai_core/prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py)):** Separação clara entre `EXPLORATION_PROMPT`, `COMBAT_PROMPT` e `TACTICAL_PROMPT`, compartilhando `BASE_FORMAT_RULES` e `GUARDRAILS` sem depender de leitura de prompt monolítico no banco.
+2. **Consolidação das Migrations ([`db/migrations/0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)):** Unificação do histórico fragmentado de migrations (`0001` a `0005`) em um único schema inicial limpo.
 
 ---
 
-## 2. Dinâmica de Onboarding e Transições
+## 1. Seção A — Clean Up Cirúrgico (Baixo Risco / Alto Impacto — Recomendado)
 
-### 2.1. Novo Fluxo de Onboarding (Prólogo na Cabana & Dupla Voz)
-1. **Seleção de Heróis:** Jogadores continuam escolhendo suas cartas canônicas (`/select 1-5`).
-2. **Finalização do Recrutamento (`/done`):**
-   * **Mudança-chave:** A Jaula 1 **NÃO** se abre imediatamente.
-   * O sistema retorna uma mensagem combinada apresentando o cenário e convocando a ação:
-     * **📜 Bloco do Dungeon Master (Ambientação):**
-       > *O sol corta a floresta densa na clareira isolada atrás da cabana de treino. Quatro pesadas jaulas de ferro reforçado repousam sob as árvores, e um som abafado de garras arranhando a pedra ecoa pela mata. À frente de vocês, o lendário treinador Loomis cruza os braços fortes e fita os novos recrutas de Hesiod.*
-     * **🗣️ Bloco de Loomis (Acolhimento & Chamado):**
-       > *"Aí estão vocês! Escolheram bem as armas. Três meses de suor nesta vila levaram a este dia. Olhem ao redor e conversem comigo se quiserem, mas não se acomodem: quando estiverem prontos para a primeira fera, me digam 'estamos prontos' para eu puxar a alavanca!"*
+Foco pragmático: corrigir apenas os **bugs reais de 1 linha** e remover **pegadas cosméticas óbvias de IA** sem alterar o schema do PostgreSQL, sem mexer na estrutura do LangGraph e sem quebrar os testes existentes.
 
-### 2.2. Transição Orgânica para o Combate & Retorno ao Foco por Contagem
-Para evitar que os jogadores fiquem conversando indefinidamente e se percam do objetivo, o `exploration_node` monitora o **número de mensagens de exploração** trocadas:
+### A.1. Correção de 3 Bugs Pontuais (Sem alterar arquitetura)
+1. **Persistir `"location"` no [`exploration_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L160):** Incluir `"location": state.location` no dicionário retornado quando a 7ª mensagem de exploração força a abertura da Jaula 1.
+2. **Chave estrangeira uniforme em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332):** Trocar `session_uuid` por `session_record.session_id` ao fazer upsert de `Monster` (igual já é feito em `Hero`).
+3. **Salvar mensagens do jogador em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L357-L373):** Salvar todas as mensagens novas do turno (`user` e `assistant`), e não apenas `state.recent_messages[-1]`.
 
-1. **Mensagens 1 a 3 (Exploração Acolhedora):**
-   * Loomis responde com paciência, tira dúvidas sobre o passado da vila, a cabana e o caldeirão de poções de menta e limão.
-2. **Mensagens 4 a 6 (Gatilho de Impaciência de Loomis):**
-   * Como treinador de sangue de ogro, Loomis começa a perder a paciência. O nó injeta no contexto instrução para que ele corte papo furado e pressione:
-     > *"Chega de conversa mole e de passar a mão na madeira da cabana, recrutas! As feras estão farejando o almoço. Vamos abrir a Jaula 1 ou vocês vão amarelar?"*
-3. **Mensagem 7+ (Gatilho Forçado de Abertura):**
-   * Se o grupo insistir em enrolar, Loomis perde a paciência de vez e age por conta própria: puxa a alavanca, solta o Bullette Faminto e força o início do combate (*"Monsters First"*).
-4. **Gatilho Voluntário (A qualquer momento):**
-   * Qualquer resposta afirmativa dos jogadores (*"estamos prontos"*, *"sim"*, *"vamos lutar"*, *"pode abrir a jaula"*, *"puxa a alavanca"*) transiciona imediatamente para o nó `combat`, abrindo a Jaula 1.
-
-### 2.3. Trava de Combate Ativo (Anti-Dispersão)
-* Enquanto houver uma fera viva e ativa na arena:
-  * Se o jogador tentar ações de exploração dispersas (*"vou até o riacho colher flores"*, *"inspeciono a lareira da cabana"*), o sistema **não** executa exploração livre.
-  * O `tactical_advice_node` intercepta e Loomis adverte em personagem:
-    > *"Atenção, recruta! O Bullette está investindo contra você com mandíbulas abertas, não é hora de passear! Mantenha a guarda e ataque!"*
-
-### 2.4. Encerramento Definitivo do Jogo (Vitória Final)
-* **O jogo termina de verdade ao derrotar a 4ª Jaula:**
-  * Não há retorno para exploração contínua pós-vitória.
-  * O estado é marcado como `is_victory = True`.
-  * Loomis faz o discurso final de consagração, entrega a insígnia oficial de **Heróis de Hesiod** e a sessão é dada como concluída. Novas mensagens de jogo são respondidas com a celebração final e convite para reiniciar com `/reset`.
+### A.2. Limpeza Cosmética e Código Morto Óbvio (Risco Zero)
+1. **Remover imports e funções mortas sem impacto:**
+   * Remover import não utilizado `NPC` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L21).
+   * Remover função [`get_db()`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L20-L26) não utilizada e importar `DATABASE_URL` de `db/session.py` em [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py#L14-L22).
+   * Remover método morto [`NPCState.heal`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68), método morto [`GameState.rotate_players`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) (e sua chamada em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279)), parâmetro ignorado `player_name` em [`create_hero`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152) e alias `reset_player_session` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L409).
+2. **Alinhar texto do `/start` no [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L166-L167):** Corrigir a descrição do poder especial de Yarrow (*"Grilhões Espectrais"*) para bater com [`HERO_ARCHETYPES`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L65).
+3. **Limpar comentários óbvios de IA e `logger.debug` silencioso:** Remover comentários redundantes que apenas repetem o código e trocar `logger.debug` por `logger.warning` nas exceções de banco em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L262).
+4. **Fast-path determinístico em [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41):** Se a mensagem já contiver comando de ataque com d20 explícito, retornar `"combat"` direto sem gastar chamada extra de LLM.
 
 ---
 
-## 3. Arquitetura do LangGraph (`turn_graph.py`)
+## 2. Seção B — Refatoração Estrutural Pesada (Alto Impacto Arquitetural / Opcional)
 
-```mermaid
-flowchart TD
-    START --> route_intent{"Classificador de Intenção<br>(LLM as a Judge)"}
-    
-    route_intent -->|Ataque / Rolagem d20| combat_node["combat_node<br>(Resolução d20 + DM)"]
-    route_intent -->|Dúvida tática / Fraqueza| tactical_advice_node["tactical_advice_node<br>(Prepara contexto de regras)"]
-    route_intent -->|Roleplay / Investigar cenário| exploration_node["exploration_node<br>(Prepara lore e ambiente)"]
-    
-    combat_node --> npc_node["npc_node<br>(Gera fala do Loomis via LLM)"]
-    tactical_advice_node --> npc_node
-    exploration_node --> npc_node
-    
-    npc_node --> END
-```
+Mudanças profundas de modelagem de banco, ORM e redistribuição de responsabilidades entre módulos (maior risco de regressão, exigiriam recriar schema do banco e reescrever testes):
 
-### 3.1. Roteamento Inteligente (`route_intent`)
-O classificador avalia a mensagem do jogador considerando 3 intenções possíveis:
-1. `combat`: Ataques físicos, feitiços ofensivos, dados informados ou ordens diretas de iniciar a luta/abrir a jaula.
-2. `tactical_advice`: Perguntas sobre defesas da fera, como usar o poder especial da carta ou dicas de combate.
-3. `exploration`: Perguntas sobre a vila de Hesiod, investigação da cabana, ferramentas, jaulas, história de Loomis e descrições livres de interpretação.
+### Lote 1: Espelhamento 1:1 (`GameState` ↔ PostgreSQL), Persistência e Bugs de Banco
+*(Arquivos: [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), [`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py), [`db/migrations/0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py), [`db/session.py`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py), [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py), [`api/motor_rpg/session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py), [`api/ai_core/orchestrator.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/orchestrator.py))*
 
-### 3.2. Nó de Exploração (`exploration_node`)
-* **Lógica em Python (sem chamadas a tabelas extras):**
-  * O lore do mundo (cabana, caldeirão de poção, as 4 jaulas, vila de Hesiod e passado de Loomis) fica consolidado no **`system_prompt` do NPC na tabela `npcs`**.
-  * O nó `exploration_node` apenas define as diretrizes de cena em `state.last_context` ("Ação Livre: Roleplay e Exploração") e prepara o histórico recente (`recent_messages`) para ser consumido pelo `npc_node`.
+* **Fix 1.1 — Espelhamento 1:1 (`GameState` ↔ `Session`) e Fim do Estado Global Volátil**
+  * **Problema:**
+    1. [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L14-L16) guarda estado crítico da sessão (`_round_buffers`, `_exploration_counters`, `_last_monster_targets`) em dicionários globais mutáveis em RAM porque esses campos não existiam no banco nem no `GameState`.
+    2. [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L248) deduz `is_recruiting = len(db_messages) == 0` por falta da coluna na tabela `sessions`.
+  * **Solução:**
+    * Adicionar `is_recruiting` (`Boolean`), `round_actions` (`JSONB`), `exploration_turns` (`Integer`) e `last_monster_target` (`String`) na tabela `sessions` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py) e [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)) e no [`GameState`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py).
+    * Deletar `_round_buffers`, `_exploration_counters` e `_last_monster_targets` de `turn_graph.py` e atualizar [`tests/test_e2e_coop_game.py`](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py) para não importar mais essas variáveis privadas.
 
-### 3.3. Adaptação do Nó de Geração (`npc_node`)
-* Consome o `system_prompt` de Loomis da tabela `npcs`.
-* **Se Exploração:** LLM recebe o histórico recente de mensagens + contexto de exploração, permitindo roleplay conversacional imersivo.
-* **Se Combate:** LLM recebe apenas o resumo determinístico do Dungeon Master + última ação, mantendo foco estrito nas regras da arena.
+* **Fix 1.2 — Bug Crítico: Salvar todas as mensagens do turno no PostgreSQL**
+  * **Problema:** Em [`orchestrator.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/orchestrator.py#L43-L57), a mensagem do usuário (`role="user"`) e a resposta de Loomis (`role="assistant"`) são adicionadas ao `state.recent_messages` antes de chamar `persist_session_state_to_db`. Porém, [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L358) inspeciona apenas `state.recent_messages[-1]`, descartando todas as mensagens dos jogadores.
+  * **Solução:** Persistir todas as mensagens novas do turno (tanto `user` quanto `assistant`) na tabela `messages`.
+
+* **Fix 1.3 — Bug: Unificar chave estrangeira (`session_record.session_id`) e Eliminar N+1 Queries / Boilerplate**
+  * **Problema:**
+    1. Em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L305), o upsert de `Hero` usa `session_record.session_id`, mas o upsert de `Monster` ([L332](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332)) usa `session_uuid`.
+    2. [`get_or_create_session_state`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L187-L234) faz 4 `SELECT`s separados ignorando os `relationship()` de [`Session`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L44-L58), e [`persist_session_state_to_db`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L304-L355) faz `SELECT` em loop `for` para cada herói e monstro, com ~100 linhas de cópia manual de atributos e `except Exception` silenciosos em `logger.debug`.
+  * **Solução:** Carregar `Session` com `selectinload(Session.heroes, Session.monsters)`, converter com `ConfigDict(from_attributes=True)` / `model_validate()`, atualizar entidades via relacionamentos usando sempre `session_record.session_id`, remover `try...except: pass` cegos e trocar `logger.debug` por `logger.warning`.
+
+* **Fix 1.4 — Limpeza de Código Morto na Camada de Banco (`db/`)**
+  * **Problema:** Com os prompts modulares em [`prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py), o modelo `NPC` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L149-L160)), a tabela `npcs` em [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py#L121-L150) e o import `NPC` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L21) ficaram sem uso. Além disso, [`get_db()`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L20-L26) nunca é chamado e `DATABASE_URL` está duplicada entre [`db/session.py`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L6-L14) e [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py#L14-L22).
+  * **Solução:** Remover o modelo/tabela morta `NPC`, remover `get_db()`, e importar `DATABASE_URL` diretamente de `db/session.py` em `db/env.py` (mantendo o `pgvector` intacto na imagem e no `pyproject.toml` para não invalidar o `uv.lock`).
 
 ---
 
-## 4. Divisão de Trabalho da Dupla
+### Lote 2: Eliminação de AI Slop no Grafo e Separação com o Motor RPG
+*(Arquivos: [`api/ai_core/turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py), [`api/motor_rpg/motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py), [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py))*
 
-| Módulo / Tarefa | Responsável | Detalhes |
-| :--- | :---: | :--- |
-| **Fixes de Estado & Memória** | **Isaac (E1)** | Remover `round_actions` do `GameState`, eliminar `_MEMORY_SESSIONS`, remover fallback e plugar histórico seletivo. |
-| **LangGraph (`turn_graph.py`)** | **Isaac (E1)** | Criar `exploration_node`, expandir `classify_intent` (LLM as a judge) e compilar o novo fluxo. |
-| **Persona & Lore no Banco (`npcs`)** | **Isaac (E1)** | Atualizar o `system_prompt` do Loomis na tabela `npcs` com as diretrizes de exploração e combate. |
-| **Trava de Combate & Onboarding** | **Isaac (E1)** | Garantir transição limpa de `/done` -> Exploração -> Abertura da Jaula 1. |
-| **Guardrails com Regex** | **Murillo (E2)** | Sanitização de entrada no bot, filtro de palavras ofensivas, comandos inválidos e injeções óbvias. |
-| **Handshake Telegram & Infra** | **Murillo (E2)** | Manter compatibilidade das mensagens formatadas em HTML e persistência no PostgreSQL. |
+* **Fix 2.1 — Bug & Slop: Retorno consistente de estado nos nós do LangGraph**
+  * **Problema:** Os nós do grafo mutam `state` in-place e retornam dicionários parciais. No [`exploration_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L138), ao atingir 7 mensagens, `state.location` é atualizado para abrir a Jaula 1, mas `"location"` não é retornado no `dict` da [L160](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L160), fazendo a mutação se perder.
+  * **Solução:** Garantir que todos os campos modificados em cada nó (`location`, `last_context`, `npcs`, `players`, `monsters`, `is_victory`, `recent_messages`, `round_actions`, `exploration_turns`, `last_monster_target`) sejam retornados de forma consistente.
 
-> [!IMPORTANT]
-> **Ponto de Atenção / Alinhamento com Murillo (Guardrails no Prompt):**
-> Antes de atualizar o `system_prompt` do Loomis no banco, verificar se o Murillo já inseriu regras anti-toxicidade/guardrails diretamente no prompt do NPC (ex: proibir palavrões, termos ofensivos ou conteúdo impróprio para contexto educacional), garantindo que as diretrizes de exploração sejam mescladas sem sobrescrever o trabalho de moderação dele.
+* **Fix 2.2 — Eliminar Acoplamento por Substring em HTML ("Stringly-Typed State")**
+  * **Problema:** O fluxo toma decisões procurando trechos de texto dentro de strings formatadas:
+    * `"HP: 0/" in (state.last_context or "")` ([L359](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L359))
+    * `[a for a in round_actions if "atacou" in a]` ([L283](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L283))
+    * `"Roleplay e Exploração" in (state.last_context or "")` ([L363](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L363))
+    * `"Dungeon Master:" in state.last_context` ([L399](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L399))
+  * **Solução:** Substituir checagens de substring em HTML por estado explícito e verificações diretas nas entidades do domínio (`monster.is_defeated`, contagem de ações da rodada em `state.round_actions`).
+
+* **Fix 2.3 — Devolver Regras de Combate para [`motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py) e Corrigir Lista de Monstros / Cura**
+  * **Problema:**
+    1. [`resolve_hero_attack`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L203-L235) e [`resolve_monster_attack`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L238-L271) têm código duplicado e retornam dicionários de 12 chaves sem uso, enquanto as regras reais (escolha de alvo do monstro, gatilho de 50% de HP, cura do Loomis e progressão das 4 jaulas) estão em `combat_node`.
+    2. Na troca de jaula ([`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L275)), `state.monsters = [next_beast]` sobrescreve a lista em RAM apagando os monstros derrotados, divergindo do banco.
+    3. Se todos os heróis caírem a `0 HP` no contra-ataque do monstro, ninguém consegue atacar para matar o monstro e acionar a cura, causando *soft-lock*.
+  * **Solução:** Unificar a resolução de ataque em `motor_rpg.py`, mover as funções de domínio de combate para lá, usar `state.monsters.append(next_beast)` sem apagar monstros derrotados e garantir que Loomis cure com poção caso o grupo inteiro caia inconsciente (conforme [`docs/game_rules.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/game_rules.md#L82)).
+
+* **Fix 2.4 — Remover Injeção de Dados "Fantasmas", `dummy_ids` e `rotate_players()` Morto**
+  * **Problema:**
+    1. [`combat_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L177-L180) injeta um `"jorick"` silencioso se `state.players` estiver vazio, e [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L88-L96) usa `dummy_ids = {"default", "player_1", "", str(session_id)}`.
+    2. [`state.rotate_players()`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) gira a lista em RAM na [L279 de turn_graph.py](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279), mas [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L208) reordena `players.sort()` pelo número da carta a cada leitura, tornando `rotate_players()` inútil (já que o atacante é identificado pelo `sender`).
+  * **Solução:** Remover a injeção de herói fantasma, o set `dummy_ids` e o método morto `rotate_players()`.
+
+* **Fix 2.5 — Simplificar `extract_d20` e Pular Chamada LLM Desnecessária em `classify_intent`**
+  * **Problema:**
+    1. [`extract_d20`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L34-L36) captura qualquer número de 1 a 20 solto na frase.
+    2. [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41-L80) faz chamada HTTP ao LLM mesmo quando a mensagem já contém ação de ataque explícita com dado (ex: *"ataco com 18"*), além de espalhar checagens anti-dispersão em 3 lugares (`classify_intent`, `route_intent` e `tactical_advice_node`).
+  * **Solução:** Ativar fast-path determinístico em `classify_intent` quando houver comando direto de combate/d20 ou prontidão explícita (economizando 1 chamada de LLM por turno de ataque) e unificar a trava de combate ativo.
 
 ---
 
-## 5. Ordem de Execução Recomendada (Branch `feature/exploration-mode`)
+### Lote 3: Redundâncias, Tipagem e Clientes de Borda
+*(Arquivos: [`telegram_bot/telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py), [`llm_gateway/client.py`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py), [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), [`api/motor_rpg/motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py), [`api/main.py`](file:///home/isaac/Documents/mc030/ai-npc/api/main.py))*
 
-### Etapa 1: Fixes Arquiteturais
-- [ ] **Passo 0.1:** Remover `round_actions` de `GameState` e isolar o controle da rodada.
-- [ ] **Passo 0.2:** Remover cache global em memória `_MEMORY_SESSIONS` e conectar diretamente ao banco.
-- [ ] **Passo 0.3:** Injetar `recent_messages` no prompt de geração exclusivamente no modo de **Exploração** (mantendo combate enxuto apenas com o resumo mecânico do round).
-- [ ] **Passo 0.4:** Remover o `FALLBACK_LOOMIS_PROMPT` em código, dependendo exclusivamente da tabela `npcs`.
-- [ ] **Passo 0.5:** Corrigir mapeamento do herói por `player_id`/`telegram_id` do remetente e alternância de dano no contra-ataque.
+* **Fix 3.1 — Fonte Única para o Catálogo de Heróis (`/start` vs `HERO_ARCHETYPES`)**
+  * **Problema:** O texto de `/start` em [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L156-L171) reescreve manualmente os status dos 5 heróis e diverge de [`HERO_ARCHETYPES`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L57-L66) (ex: Yarrow descrito com *"Espírito da Floresta"* no bot vs *"Grilhões Espectrais"* no motor).
+  * **Solução:** Sincronizar a listagem de cartas a partir do catálogo canônico de `motor_rpg.py`.
 
-### Etapa 2: Implementação do Modo Exploration
-- [ ] **Passo 1:** Verificar se o Murillo adicionou regras anti-palavrão/guardrails no prompt e atualizar o `system_prompt` de Loomis na tabela `npcs` (mesclando regras de moderação, combate e lore de exploração).
-- [ ] **Passo 2:** Implementar `exploration_node` no LangGraph (preparando contexto e memória recente).
-- [ ] **Passo 3:** Expandir o classificador `classify_intent` (LLM as a judge) para 3 intenções (`combat`, `tactical_advice`, `exploration`).
-- [ ] **Passo 4:** Ajustar onboarding (Loomis instigando o teste pós `/done`), trava de combate ativo e encerramento definitivo do jogo na 4ª Jaula.
-- [ ] **Passo 5:** Testes automatizados cobrindo os fixes e as novas rotas.
+* **Fix 3.2 — Remoção de Parâmetros, Métodos e Aliases Mortos**
+  * **Problema:**
+    * Parâmetro `player_name` em [`create_hero`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152) é recebido e ignorado.
+    * Método [`NPCState.heal`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68) nunca é chamado.
+    * Alias `reset_player_session = reset_game_session` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L409) é desnecessário.
+  * **Solução:** Remover os elementos mortos e importar `reset_game_session` diretamente em [`api/main.py`](file:///home/isaac/Documents/mc030/ai-npc/api/main.py#L11).
+
+* **Fix 3.3 — Limpeza do [`LLMClient`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py) e Envio HTML no Telegram**
+  * **Problema:** Triplo `try/except` aninhado e repetido em cada handler de [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L343-L355) para envio de mensagens HTML com fallback texto puro.
+  * **Solução:** Extrair um único método auxiliar `_safe_reply(message, text)` no `TelegramService` e limpar comentários óbvios no `LLMClient`.
+
+---
+
+## 3. Roteiro de Execução e Validação (4 Etapas)
+
+- [ ] **Etapa 1 — Execução (Seção A ou A+B):** Aplicar os ajustes cirúrgicos da **Seção A** (e opcionalmente itens escolhidos da **Seção B**).
+- [ ] **Etapa 2 — Bateria de Testes E2E:** Rodar [`tests/test_e2e_coop_game.py`](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py) garantindo 100% de aprovação.
+- [ ] **Etapa 3 — Nova Auditoria Cega por Subagente:** Invocar novamente o subagente de auditoria (`research`) sobre a base limpa para confirmar que nenhum *AI slop*, código morto ou inconsistência restou.
+- [ ] **Etapa 4 — Revisão Humana Final:** Leitura manual completa de todos os arquivos antes do merge para a `main`.
