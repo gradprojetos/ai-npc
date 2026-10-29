@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from api.ai_core.orchestrator import process_npc_turn
 from api.ai_core.turn_graph import (
+    _acted_heroes,
     _exploration_counters,
     _last_monster_targets,
     _round_buffers,
@@ -24,12 +25,14 @@ def clean_test_state():
     for s_id in sessions:
         reset_game_session(s_id)
         _round_buffers.pop(s_id, None)
+        _acted_heroes.pop(s_id, None)
         _last_monster_targets.pop(s_id, None)
         _exploration_counters.pop(s_id, None)
     yield
     for s_id in sessions:
         reset_game_session(s_id)
         _round_buffers.pop(s_id, None)
+        _acted_heroes.pop(s_id, None)
         _last_monster_targets.pop(s_id, None)
         _exploration_counters.pop(s_id, None)
 
@@ -116,10 +119,21 @@ async def test_e2e_cooperative_multiplayer_flow():
         user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
     )
 
-    # Rodada ainda aberta aguardando ação de Pedro: não envia resumo de combate
-    assert reply_round1_p1 == ""
+    # Rodada ainda aberta aguardando ação de Pedro: feedback mecânico imediato do DM sem Loomis
+    assert "Dungeon Master:" in reply_round1_p1
+    assert "Evindol" in reply_round1_p1
+    assert "Próximo a agir: <b>Raen</b>" in reply_round1_p1
+    assert "Loomis:" not in reply_round1_p1
     assert len(_round_buffers.get(session_id, [])) == 1
     assert "Evindol" in _round_buffers[session_id][0]
+
+    # Validação de iniciativa: Isaac tenta atacar de novo antes de Pedro
+    reply_dup = await process_npc_turn(
+        user_message="ataco de novo com 20",
+        user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
+    )
+    assert "já realizou sua ação nesta rodada" in reply_dup
+    assert "É a vez de <b>Raen</b>" in reply_dup
 
     # Ação 2: Pedro (Raen) ataca com 17 -> FECHA A RODADA
     reply_round1_p2 = await process_npc_turn(
@@ -138,10 +152,13 @@ async def test_e2e_cooperative_multiplayer_flow():
     # 6. Rodada 2: Alternância Canônica de Alvo do Monstro
     # =========================================================================
     # Isaac ataca
-    await process_npc_turn(
+    reply_round2_p1 = await process_npc_turn(
         user_message="ataco com 18",
         user_info={"session_id": session_id, "telegram_id": "101", "first_name": "Isaac"},
     )
+    assert "Dungeon Master:" in reply_round2_p1
+    assert "Próximo a agir: <b>Raen</b>" in reply_round2_p1
+    assert "Loomis:" not in reply_round2_p1
 
     # Pedro ataca e fecha a rodada 2
     reply_round2 = await process_npc_turn(
