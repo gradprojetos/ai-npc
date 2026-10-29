@@ -5,16 +5,24 @@ from langgraph.graph import StateGraph, START, END
 from api.schemas.rpg import GameState, Message
 from llm_gateway.client import LLMClient
 from api.motor_rpg.motor_rpg import resolve_hero_attack, resolve_monster_attack, get_cage_monster, create_hero
-from db.models import NPC
-from db.session import SessionLocal
+from api.ai_core.prompts import EXPLORATION_PROMPT, COMBAT_PROMPT, TACTICAL_PROMPT
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
 
 # Buffers temporários de execução em memória por sessão
 _round_buffers: dict[str, list[str]] = {}
+_acted_heroes: dict[str, list[str]] = {}
 _last_monster_targets: dict[str, str] = {}
 _exploration_counters: dict[str, int] = {}
+
+
+def clear_round_state(session_id: str) -> None:
+    """Limpa buffers temporários em memória da sessão."""
+    _round_buffers.pop(session_id, None)
+    _acted_heroes.pop(session_id, None)
+    _last_monster_targets.pop(session_id, None)
+    _exploration_counters.pop(session_id, None)
 
 
 async def extract_d20(text: str) -> int | None:
@@ -45,11 +53,11 @@ async def classify_intent(text: str) -> str:
         return "exploration"
 
     prompt = (
-        "Você é o classificador de intenções de um RPG de mesa textual.\n"
+        "Você é o classificador de intenções de um RPG de mesa textual infantil/educacional.\n"
         "Classifique a mensagem do jogador em estritamente UMA das 3 categorias:\n"
-        "1. 'combat': Ações de ataque, golpes, tiros, magias ofensivas, dados (d20), ou confirmação de prontidão para iniciar a luta / abrir jaula (ex: 'estamos prontos', 'pode abrir', 'vamos lutar', 'puxa a alavanca', 'bora').\n"
+        "1. 'combat': Declaração explícita de ataque mecânico, golpes, tiros, magias ofensivas, dados (d20), ou confirmação explícita de prontidão para iniciar a luta (ex: 'estamos prontos', 'pode começar', 'vamos lutar', 'puxa a alavanca'). ATENÇÃO: Ações narrativas ou tentativas de roleplay fora de hora (ex: 'tento abrir a jaula na surdina', 'quero soltar o monstro', 'mexer na tranca') são 'exploration', NUNCA 'combat'.\n"
         "2. 'tactical_advice': Perguntas sobre regras de combate, fraquezas do monstro atual ou conselho sobre como usar poderes da carta de herói.\n"
-        "3. 'exploration': Conversa livre, perguntas sobre a vila de Hesiod, investigar a cabana, caldeirão de poção, ferramentas, lore ou passado de Loomis.\n\n"
+        "3. 'exploration': Conversa livre, perguntas sobre a vila de Hesiod, investigar a cabana, caldeirão de poção, ferramentas, lore ou qualquer ação narrativa/roleplay na clareira.\n\n"
         "Responda APENAS: 'combat', 'tactical_advice' ou 'exploration'."
     )
     try:
@@ -70,7 +78,7 @@ async def classify_intent(text: str) -> str:
         d20 = await extract_d20(text)
         if d20 is not None:
             return "combat"
-        ready_pattern = r"\b(?:pront[oa]s?|vamos lutar|abrir|abre a jaula|puxa a alavanca|bora|começar)\b"
+        ready_pattern = r"\b(?:estamos pront[oa]s?|vamos lutar|puxa a alavanca|bora começar|começar treino)\b"
         combat_pattern = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano)\w*"
         if re.search(ready_pattern, text, re.IGNORECASE) or re.search(combat_pattern, text, re.IGNORECASE):
             return "combat"
@@ -115,10 +123,14 @@ def tactical_advice_node(state: GameState) -> dict:
         elif state.is_victory:
             context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
 
+    if state.npcs:
+        state.npcs[0].system_prompt = TACTICAL_PROMPT
+
     last_context = "\n".join(context_parts)
     state.last_context = last_context
     return {
         "last_context": last_context,
+        "npcs": state.npcs,
     }
 
 
@@ -149,16 +161,23 @@ def exploration_node(state: GameState) -> dict:
             "as ferramentas, a cabana rústica e o caldeirão de poção revigorante de menta e limão. Lembre-os amigavelmente de avisar quando estiverem prontos."
         )
 
+    if state.npcs:
+        state.npcs[0].system_prompt = EXPLORATION_PROMPT
+
     last_context = "\n".join(context_parts)
     state.last_context = last_context
     return {
         "last_context": last_context,
+        "npcs": state.npcs,
     }
 
 
 async def combat_node(state: GameState) -> dict:
     """Nó determinístico para resolução do combate, turno do monstro e resumo mecânico."""
     logger.info("Executando nó de combate determinístico...")
+
+    if state.npcs:
+        state.npcs[0].system_prompt = COMBAT_PROMPT
 
     last_user_message = state.get_last_user_message()
     d20 = await extract_d20(last_user_message)
@@ -169,8 +188,34 @@ async def combat_node(state: GameState) -> dict:
     if not state.monsters:
         state.monsters.append(get_cage_monster(1))
 
+    # Identifica monstros ativos (prioriza monstro ativo e não derrotado)
+    active_monsters = [m for m in state.monsters if not m.is_defeated]
+    if not active_monsters:
+        active_monsters = state.monsters
+
+    # Seleção de alvo: se o jogador citou o nome do monstro, ataca o citado; senão foca no mais ferido
+    target_monster = None
+    last_msg_lower = last_user_message.lower()
+    for m in active_monsters:
+        if any(part in last_msg_lower for part in m.name.lower().split()):
+            target_monster = m
+            break
+    if not target_monster:
+        target_monster = min(active_monsters, key=lambda m: m.hp)
+    monster = target_monster
+
+    # Abre a jaula para combate se ainda estiver na fase de exploração
+    if "Aberta" not in (state.location or ""):
+        cage_num = monster.cage_number if monster else 1
+        state.location = f"Arena de Hesiod — Jaula {cage_num} Aberta"
+        _exploration_counters[state.session_id] = 0
+
+    conscious_heroes = [h for h in state.players if not h.is_unconscious]
+    acted = _acted_heroes.setdefault(state.session_id, [])
+    pending_heroes = [h for h in conscious_heroes if h.player_id not in acted]
+
     # Identifica o herói que está agindo com base no remetente da mensagem
-    hero = state.players[0]
+    hero = None
     last_user_msg = next((m for m in reversed(state.recent_messages) if m.role == "user"), None)
     if last_user_msg and state.players:
         sender = last_user_msg.sender
@@ -178,21 +223,8 @@ async def combat_node(state: GameState) -> dict:
             if p.player_id == sender or (sender and sender in p.name):
                 hero = p
                 break
-
-    # Identifica o monstro alvo (prioriza monstro ativo e não derrotado)
-    active_monsters = [m for m in state.monsters if not m.is_defeated]
-    monster = active_monsters[0] if active_monsters else (state.monsters[0] if state.monsters else None)
-    last_msg_lower = last_user_message.lower()
-    for m in state.monsters:
-        if not m.is_defeated and any(part in last_msg_lower for part in m.name.lower().split()):
-            monster = m
-            break
-
-    # Abre a jaula para combate se ainda estiver na fase de exploração
-    if "Aberta" not in (state.location or ""):
-        cage_num = monster.cage_number if monster else 1
-        state.location = f"Arena de Hesiod — Jaula {cage_num} Aberta"
-        _exploration_counters[state.session_id] = 0
+    if not hero:
+        hero = pending_heroes[0] if pending_heroes else (conscious_heroes[0] if conscious_heroes else state.players[0])
 
     # Se o d20 não foi informado: sinaliza abertura da jaula e pede rolagem física
     if d20 is None:
@@ -207,6 +239,37 @@ async def combat_node(state: GameState) -> dict:
             "players": state.players,
             "monsters": state.monsters,
             "recent_messages": state.recent_messages,
+            "npcs": state.npcs,
+        }
+
+    # Validação de iniciativa: herói inconsciente não ataca
+    if hero.is_unconscious:
+        next_hero_name = pending_heroes[0].name if pending_heroes else "seus aliados"
+        state.last_context = (
+            f"<b>Dungeon Master:</b>\n"
+            f"• <b>{hero.name}</b> está inconsciente e não pode atacar! É a vez de <b>{next_hero_name}</b> agir."
+        )
+        return {
+            "last_context": state.last_context,
+            "players": state.players,
+            "monsters": state.monsters,
+            "recent_messages": state.recent_messages,
+            "npcs": state.npcs,
+        }
+
+    # Validação de iniciativa: impede o mesmo herói de atacar duas vezes no mesmo round
+    if hero.player_id in acted:
+        next_hero_name = pending_heroes[0].name if pending_heroes else "seus aliados"
+        state.last_context = (
+            f"<b>Dungeon Master:</b>\n"
+            f"• <b>{hero.name}</b> já realizou sua ação nesta rodada! É a vez de <b>{next_hero_name}</b> agir."
+        )
+        return {
+            "last_context": state.last_context,
+            "players": state.players,
+            "monsters": state.monsters,
+            "recent_messages": state.recent_messages,
+            "npcs": state.npcs,
         }
 
     initial_monster_name = monster.name
@@ -222,12 +285,13 @@ async def combat_node(state: GameState) -> dict:
     else:
         hero_action_text = f"errou o golpe! [Monstro HP: {monster.hp}/{monster.max_hp}]"
 
-    round_actions.append(
-        f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name} e {hero_action_text}"
-    )
+    action_text = f"• <b>{hero.name}</b> atacou <b>{initial_monster_name}</b> com {hero.attack_name} e {hero_action_text}"
+    round_actions.append(action_text)
+    acted.append(hero.player_id)
 
     # 2. Gatilho Loomis: Monstro em 50% de HP ou menos
     has_fallen_hero = any(h.is_unconscious for h in state.players)
+    new_beast = None
     if (
         monster.is_half_hp_or_less
         and len([m for m in state.monsters if not m.is_defeated]) == 1
@@ -268,36 +332,48 @@ async def combat_node(state: GameState) -> dict:
     state.rotate_players()
 
     # 5. Verifica se a rodada terminou (todos os jogadores conscientes já declararam ação)
-    total_active_heroes = len([h for h in state.players if not h.is_unconscious]) or 1
-    hero_attacks = [a for a in round_actions if "atacou" in a]
-    round_finished = len(hero_attacks) >= total_active_heroes or state.is_victory
+    conscious_heroes = [h for h in state.players if not h.is_unconscious]
+    remaining_heroes = [h for h in conscious_heroes if h.player_id not in acted]
+    round_finished = len(remaining_heroes) == 0 or state.is_victory
 
     if not round_finished:
-        # Rodada ainda em andamento: não envia mensagem do DM nem do Loomis agora
-        state.last_context = None
+        # Rodada ainda em andamento: retorno determinístico imediato do DM com indicação do próximo herói
+        next_hero = remaining_heroes[0]
+        dm_mid_lines = [
+            "<b>Dungeon Master:</b>",
+            action_text,
+        ]
+        if new_beast:
+            dm_mid_lines.append(f"• <b>{new_beast.name}</b> entrou na arena! [Monstro HP: {new_beast.hp}/{new_beast.max_hp}]")
+        dm_mid_lines.append(f"• Próximo a agir: <b>{next_hero.name}</b>, declare sua ação e o valor do seu d20 físico!")
+
+        state.last_context = "\n".join(dm_mid_lines)
         return {
-            "last_context": None,
+            "last_context": state.last_context,
             "players": state.players,
             "monsters": state.monsters,
             "is_victory": state.is_victory,
             "recent_messages": state.recent_messages,
+            "npcs": state.npcs,
         }
 
     # 6. Rodada Encerrada: Turno dos Monstros (cada fera viva ataca 1 vez)
+    _acted_heroes.pop(state.session_id, None)
     dm_lines = ["<b>Dungeon Master:</b>"] + round_actions
     _round_buffers.pop(state.session_id, None)
 
     if not state.is_victory:
         alive_beasts = [m for m in state.monsters if not m.is_defeated]
-        conscious_heroes = [h for h in state.players if not h.is_unconscious]
+        active_conscious = [h for h in state.players if not h.is_unconscious]
         last_target_id = _last_monster_targets.get(state.session_id)
 
         for beast in alive_beasts:
-            if not conscious_heroes:
+            if not active_conscious:
                 break
-            # Regra canônica: priorizar maior HP, mas excluir o alvo atingido no turno anterior se houver outro herói consciente
-            candidates = [h for h in conscious_heroes if h.player_id != last_target_id] if len(conscious_heroes) > 1 else conscious_heroes
+            # Regra canônica: priorizar maior HP, alternando alvo se houver outro herói consciente
+            candidates = [h for h in active_conscious if h.player_id != last_target_id] if len(active_conscious) > 1 else active_conscious
             target_hero = max(candidates, key=lambda h: h.hp)
+            last_target_id = target_hero.player_id
             _last_monster_targets[state.session_id] = target_hero.player_id
 
             m_res = resolve_monster_attack(beast, target_hero)
@@ -315,7 +391,7 @@ async def combat_node(state: GameState) -> dict:
             )
             if target_hero.is_unconscious:
                 dm_lines.append(f"• <b>{target_hero.name}</b> caiu inconsciente!")
-                conscious_heroes.remove(target_hero)
+                active_conscious.remove(target_hero)
 
     state.last_context = "\n".join(dm_lines)
 
@@ -325,6 +401,7 @@ async def combat_node(state: GameState) -> dict:
         "monsters": state.monsters,
         "is_victory": state.is_victory,
         "recent_messages": state.recent_messages,
+        "npcs": state.npcs,
     }
 
 
@@ -332,21 +409,36 @@ async def npc_node(state: GameState) -> dict:
     """Nó principal de narração e diálogo do NPC Loomis em 1ª pessoa com trava anti-alucinação."""
     last_user_message = state.get_last_user_message()
 
-    # Se a rodada ainda estiver aberta aguardando outros heróis, não dispara mensagem
+    # Se a rodada não gerou contexto e não é vitória, não dispara mensagem
     if state.last_context is None and not state.is_victory:
         return {
             "recent_messages": state.recent_messages,
         }
 
-    effective_system_prompt = state.npcs[0].system_prompt if state.npcs and state.npcs[0].system_prompt else ""
-    if not effective_system_prompt:
-        try:
-            with SessionLocal() as db:
-                db_npc = db.query(NPC).filter_by(name="Loomis").first()
-                if db_npc:
-                    effective_system_prompt = db_npc.system_prompt
-        except Exception as e:
-            logger.debug(f"Não foi possível carregar prompt do NPC do banco: {e}")
+    # Resposta determinística imediata do DM durante o round (sem chamada de LLM para Loomis)
+    is_mid_round_turn = (
+        "Próximo a agir:" in (state.last_context or "")
+        or "já realizou sua ação nesta rodada" in (state.last_context or "")
+        or "está inconsciente e não pode atacar" in (state.last_context or "")
+    )
+    if is_mid_round_turn:
+        npc_message = Message(
+            sender="Dungeon Master",
+            content=state.last_context,
+            role="assistant",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        state.recent_messages.append(npc_message)
+        return {
+            "recent_messages": state.recent_messages,
+            "last_context": state.last_context,
+        }
+
+    effective_system_prompt = (
+        state.npcs[0].system_prompt
+        if state.npcs and state.npcs[0].system_prompt
+        else EXPLORATION_PROMPT
+    )
 
     monster_fell = "HP: 0/" in (state.last_context or "") or any(m.is_defeated for m in state.monsters)
     defeated_tag = "\n[MONSTRO DERROTADO]" if monster_fell else ""
@@ -381,11 +473,15 @@ async def npc_node(state: GameState) -> dict:
         elif monster_fell:
             resposta_texto = "A fera caiu! Excelente golpe, recrutas! Mas mantenham o foco que a próxima jaula está à frente!"
         elif "nenhuma rolagem de dado válida" in (state.last_context or "") or "declare sua ação e o valor" in (state.last_context or ""):
-            resposta_texto = "De nada adianta empunhar a arma sem rolar os dados! Jogue seu d20 na mesa e me diga quanto tirou!"
+            resposta_texto = "De nada adianta empunhar a arma sem atacar de verdade! Mantenham a postura e preparem o golpe!"
         else:
-            resposta_texto = "Fiquem atentos às fraquezas da fera e mantenham a formação! Hesiod conta com a coragem de vocês!"
+            resposta_texto = "Fiquem atentos e mantenham a formação! Hesiod conta com a coragem de vocês!"
 
     speech = resposta_texto.strip()
+    speech = re.sub(r"^Loomis\s*:\s*", "", speech, flags=re.IGNORECASE).strip()
+    speech = re.sub(r"^<b>Loomis:?</b>\s*", "", speech, flags=re.IGNORECASE).strip()
+    if speech.startswith('"') and speech.endswith('"') and len(speech) > 2:
+        speech = speech[1:-1].strip()
 
     # Compõe mensagem final com bloco do Dungeon Master se for combate
     if state.last_context and "Dungeon Master:" in state.last_context:
