@@ -385,6 +385,12 @@ def reset_game_session(identifier: int | str) -> bool:
     chat_id_int, session_uuid = normalize_session_id(identifier)
 
     try:
+        from api.ai_core.turn_graph import clear_round_state
+        clear_round_state(str(identifier))
+    except Exception:
+        pass
+
+    try:
         with SessionLocal() as db:
             sessions = []
             if chat_id_int is not None:
