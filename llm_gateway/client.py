@@ -26,7 +26,10 @@ class LLMClient:
         model: str | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("LLM_API_KEY")
-        self.url = url or os.getenv("LLM_API_URL", DEFAULT_LLM_URL)
+        raw_url = url or os.getenv("LLM_API_URL", DEFAULT_LLM_URL)
+        if raw_url and not raw_url.rstrip("/").endswith("/chat/completions"):
+            raw_url = raw_url.rstrip("/") + "/chat/completions"
+        self.url = raw_url
         self.model = model or os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
 
     async def generate_reply(
@@ -55,11 +58,17 @@ class LLMClient:
         payload: dict[str, Any] = {
             "model": model or self.model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "options": {
                 "num_predict": max_tokens,
             },
             "messages": messages,
         }
+
+        # Desativa tokens de raciocínio interno no OpenRouter para modelos de raciocínio (ex: Nemotron)
+        # garantindo que todo o limite de tokens seja aproveitado na geração de fala/resposta visível
+        if "openrouter.ai" in self.url:
+            payload["reasoning"] = {"effort": "none"}
 
         # envia a requisicao assincrona para o endpoint do gateway
         async with httpx.AsyncClient(timeout=DEFAULT_REQUEST_TIMEOUT) as client:
@@ -72,4 +81,8 @@ class LLMClient:
                 raise RuntimeError(f"Erro ao comunicar com LLM: {response.status_code}")
 
             data: dict[str, Any] = response.json()
-            return str(data["choices"][0]["message"]["content"])
+            choice_message = data["choices"][0]["message"]
+            content = choice_message.get("content")
+            if not content and choice_message.get("reasoning"):
+                content = choice_message.get("reasoning")
+            return str(content or "").strip()

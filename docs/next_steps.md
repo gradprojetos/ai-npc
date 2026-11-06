@@ -16,9 +16,9 @@ Antes desta etapa, a branch já incorporou duas melhorias estruturais importante
 
 Foco pragmático: corrigir apenas os **bugs reais de 1 linha** e remover **pegadas cosméticas óbvias de IA** sem alterar o schema do PostgreSQL, sem mexer na estrutura do LangGraph e sem quebrar os testes existentes.
 
-### A.1. Correção de 3 Bugs Pontuais (Sem alterar arquitetura)
-1. **Persistir `"location"` no [`exploration_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L160):** Incluir `"location": state.location` no dicionário retornado quando a 7ª mensagem de exploração força a abertura da Jaula 1.
-2. **Chave estrangeira uniforme em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332):** Trocar `session_uuid` por `session_record.session_id` ao fazer upsert de `Monster` (igual já é feito em `Hero`).
+### A.1. Correção de Bugs Pontuais de Estado e Banco (Sem alterar arquitetura)
+1. **Não usar `state.location` como flag de jaula em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py):** Manter `location` estritamente como descrição do cenário (`"Clareira de Treino em Hesiod"`) e corrigir a detecção de combate ativo em `route_intent` sem depender de `"Aberta" in state.location`.
+2. **Chave estrangeira uniforme e preservação de monstros derrotados em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332) e [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L328):** Trocar `session_uuid` por `session_record.session_id` ao fazer upsert de `Monster` e usar `state.monsters.append(next_beast)` (em vez de `state.monsters = [next_beast]`) para que o monstro derrotado seja salvo com `hp=0, is_defeated=True` no banco e não "ressuscite" no turno seguinte.
 3. **Salvar mensagens do jogador em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L357-L373):** Salvar todas as mensagens novas do turno (`user` e `assistant`), e não apenas `state.recent_messages[-1]`.
 
 ### A.2. Limpeza Cosmética e Código Morto Óbvio (Risco Zero)
@@ -28,7 +28,7 @@ Foco pragmático: corrigir apenas os **bugs reais de 1 linha** e remover **pegad
    * Remover método morto [`NPCState.heal`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68), método morto [`GameState.rotate_players`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) (e sua chamada em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279)), parâmetro ignorado `player_name` em [`create_hero`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152) e alias `reset_player_session` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L409).
 2. **Alinhar texto do `/start` no [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L166-L167):** Corrigir a descrição do poder especial de Yarrow (*"Grilhões Espectrais"*) para bater com [`HERO_ARCHETYPES`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L65).
 3. **Limpar comentários óbvios de IA e `logger.debug` silencioso:** Remover comentários redundantes que apenas repetem o código e trocar `logger.debug` por `logger.warning` nas exceções de banco em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L262).
-4. **Fast-path determinístico em [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41):** Se a mensagem já contiver comando de ataque com d20 explícito, retornar `"combat"` direto sem gastar chamada extra de LLM.
+4. **Manter avaliação por IA no [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41) e determinismo restrito a comandos/onboarding:** Toda mensagem aberta de jogo deve passar pelo julgamento da IA em `classify_intent` (já que frases como *"se eu disser ataco com 18..."* podem ser dúvidas táticas; regex permanece exclusivamente como fallback se a API falhar). Apenas comandos explícitos (`/start`, `/select`, `/done`, `/help`, `/reset`) e o fluxo de onboarding são 100% determinísticos sem envolver IA.
 
 ---
 
@@ -91,11 +91,11 @@ Mudanças profundas de modelagem de banco, ORM e redistribuição de responsabil
     2. [`state.rotate_players()`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) gira a lista em RAM na [L279 de turn_graph.py](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279), mas [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L208) reordena `players.sort()` pelo número da carta a cada leitura, tornando `rotate_players()` inútil (já que o atacante é identificado pelo `sender`).
   * **Solução:** Remover a injeção de herói fantasma, o set `dummy_ids` e o método morto `rotate_players()`.
 
-* **Fix 2.5 — Simplificar `extract_d20` e Pular Chamada LLM Desnecessária em `classify_intent`**
+* **Fix 2.5 — Simplificar `extract_d20` e Unificar Trava Anti-Dispersão (Mantendo IA no `classify_intent`)**
   * **Problema:**
-    1. [`extract_d20`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L34-L36) captura qualquer número de 1 a 20 solto na frase.
-    2. [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41-L80) faz chamada HTTP ao LLM mesmo quando a mensagem já contém ação de ataque explícita com dado (ex: *"ataco com 18"*), além de espalhar checagens anti-dispersão em 3 lugares (`classify_intent`, `route_intent` e `tactical_advice_node`).
-  * **Solução:** Ativar fast-path determinístico em `classify_intent` quando houver comando direto de combate/d20 ou prontidão explícita (economizando 1 chamada de LLM por turno de ataque) e unificar a trava de combate ativo.
+    1. [`extract_d20`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L34-L36) captura qualquer número de 1 a 20 solto na frase e ignora validação de números fora do intervalo (como `50` ou `40`).
+    2. Checagens anti-dispersão estão espalhadas em 3 lugares (`classify_intent`, `route_intent` e `tactical_advice_node`).
+  * **Solução:** Manter `classify_intent` avaliando cada mensagem livre via IA (com regex apenas como fallback de erro de rede), garantir que comandos (`/help`, `/start`, `/select`, `/done`, `/reset`) e onboarding sejam 100% determinísticos sem IA, e centralizar a trava de combate ativo em `route_intent`.
 
 ---
 
@@ -117,11 +117,38 @@ Mudanças profundas de modelagem de banco, ORM e redistribuição de responsabil
   * **Problema:** Triplo `try/except` aninhado e repetido em cada handler de [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L343-L355) para envio de mensagens HTML com fallback texto puro.
   * **Solução:** Extrair um único método auxiliar `_safe_reply(message, text)` no `TelegramService` e limpar comentários óbvios no `LLMClient`.
 
+* **Fix 3.4 — Ajustes de Partida Real e Prompts (Detalhado em [`docs/diagnostico_bugs.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/diagnostico_bugs.md))**
+  * **Proibir HTML na saída da LLM (`prompts.py`):** Exigir texto puro (evitando `<font color="#8B4513">` e rubricas `<i>Sopro alto e agudo</i>` que consomem os 60 tokens), adicionar trava estrita de Português (pt-BR) e proibir invenção de senhas verbais (*"Diga SIM, TREINADOR"*).
+  * **Validação de d20 fora de 1–20 (`turn_graph.py`):** Tratar rolagens inválidas (ex: `ataco com 50`) com aviso direto do DM, sem reanunciar abertura de jaula e sem acionar a LLM.
+  * **Preservar `state.location`:** Manter `location` apenas como descrição de cena (`"Clareira de Treino em Hesiod"`), sem sobrescrevê-lo com status de jaula.
+  * **Enxugar verbosidade do Onboarding:** Reduzir a confirmação do `/select` para 1–2 linhas e unificar a mensagem do `/reset`.
+
 ---
 
-## 3. Roteiro de Execução e Validação (4 Etapas)
+## 3. Gateway Multi-Provedor LLM (Strategy + Adapter Pattern)
 
-- [ ] **Etapa 1 — Execução (Seção A ou A+B):** Aplicar os ajustes cirúrgicos da **Seção A** (e opcionalmente itens escolhidos da **Seção B**).
+Desacoplar as particularidades de cada provedor em [`llm_gateway/`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py) mantendo a fachada `LLMClient` 100% retrocompatível:
+
+- [ ] **3.1.** Criar a interface abstrata `LLMProvider` (Strategy) em `llm_gateway/providers/base.py`.
+- [ ] **3.2.** Implementar `OpenRouterProvider`, `ICUnicampProvider` e `NvidiaBuildProvider`.
+- [ ] **3.3.** Implementar `LLMProviderFactory` em `llm_gateway/factory.py` selecionando via `LLM_PROVIDER` no `.env`.
+
+---
+
+## 4. Atualização da Documentação de Arquitetura ([`docs/architecture.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/architecture.md))
+
+Pontos do documento de arquitetura que estão defasados em relação ao código atual e precisam ser alinhados:
+
+- [ ] **4.1. Ciclo Cognitivo no LangGraph (Seção 5):** Atualizar o diagrama de estados para incluir as 3 rotas reais (`exploration_node`, `tactical_advice_node`, `combat_node`), os prompts modulares de [`api/ai_core/prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py) e o retorno imediato do DM no meio da rodada (`is_mid_round_turn`).
+- [ ] **4.2. Persistência vs. Memória (Seção 3):** Atualizar o diagrama de sequência para remover o antigo `SessionManager (Memória)` como fonte primária e refletir o PostgreSQL como *Single Source of Truth*.
+- [ ] **4.3. Dinâmica de Rodada Fechada vs. "Monsters First" (Seção 4.2):** Alinhar a descrição das regras com a implementação atual de rodada fechada por iniciativa e com o prólogo de exploração pós-`/done`.
+- [ ] **4.4. Status do Langfuse (Seções 1 e 3):** Sinalizar o Langfuse como integração planejada/futura (atualmente pausada no código).
+
+---
+
+## 5. Roteiro de Execução e Validação (4 Etapas)
+
+- [ ] **Etapa 1 — Execução (Seção A ou A+B):** Aplicar os ajustes cirúrgicos da **Seção A** + **Fix 3.4** (e opcionalmente itens escolhidos da **Seção B**).
 - [ ] **Etapa 2 — Bateria de Testes E2E:** Rodar [`tests/test_e2e_coop_game.py`](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py) garantindo 100% de aprovação.
 - [ ] **Etapa 3 — Nova Auditoria Cega por Subagente:** Invocar novamente o subagente de auditoria (`research`) sobre a base limpa para confirmar que nenhum *AI slop*, código morto ou inconsistência restou.
 - [ ] **Etapa 4 — Revisão Humana Final:** Leitura manual completa de todos os arquivos antes do merge para a `main`.

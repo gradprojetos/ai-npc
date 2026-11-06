@@ -464,7 +464,6 @@ async def npc_node(state: GameState) -> dict:
         resposta_texto = await llm_client.generate_reply(
             message=prompt_context,
             system_prompt=effective_system_prompt,
-            model="ministral-3:8b",
         )
     except Exception as e:
         logger.warning(f"Falha ao gerar fala do Loomis via LLM ({repr(e)}), usando fala padrão de treino.")
