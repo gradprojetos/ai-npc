@@ -66,11 +66,15 @@ async def execute_full_campaign_until_victory(session_id: str, players_config: l
                 user_message="ataco a fera com 20",
                 user_info={"session_id": session_id, "telegram_id": p_id, "first_name": p_name},
             )
-            if is_closing_action:
+            st_check = get_or_create_session_state(session_id)
+            if is_closing_action or st_check.is_victory:
                 last_closing_reply = reply
                 round_entries.append(f"[{h_name} - FECHA RODADA]: ataco com 20\n{reply}")
             else:
                 round_entries.append(f"[{h_name}]: ataco com 20\n{reply}")
+
+            if st_check.is_victory:
+                break
 
         log_test_turn(log_file, f"Rodada {round_num}", f"Ações ({num_players} heróis)", "ataco com 20", "\n---\n".join(round_entries))
 

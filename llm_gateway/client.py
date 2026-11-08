@@ -81,7 +81,7 @@ class GroqAdapter(BaseLLMAdapter):
     ) -> dict[str, Any]:
         target_model = (model or self.model).strip()
         is_reasoning = any(k in target_model.lower() for k in _REASONING_MODEL_KEYWORDS)
-        effective_max_tokens = max_tokens + 120 if is_reasoning else max_tokens
+        effective_max_tokens = max_tokens + 250 if is_reasoning else max_tokens
 
         payload: dict[str, Any] = {
             "model": target_model,
