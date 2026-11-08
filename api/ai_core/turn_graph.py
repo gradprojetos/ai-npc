@@ -451,6 +451,16 @@ async def combat_node(state: GameState) -> dict:
                 dm_lines.append(f"• <b>{target_hero.name}</b> caiu inconsciente!")
                 active_conscious.remove(target_hero)
 
+        # Regra de Hesiod: se todo o grupo tombar, Loomis arremessa a poção e reanima os heróis para o treino continuar
+        if not active_conscious and state.players:
+            healed_names = []
+            for h in state.players:
+                h.restore_full_hp()
+                healed_names.append(h.name)
+            dm_lines.append(
+                f"• Loomis interveio arremessando sua poção de menta e limão, reanimando {', '.join(healed_names)} para continuar a luta!"
+            )
+
     state.last_context = "\n".join(dm_lines)
 
     return {

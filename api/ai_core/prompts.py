@@ -16,8 +16,9 @@ GUARDRAILS = (
 )
 
 SHARED_ACTION_RULES = (
-    "• Aceite declarações curtas de ataque (como 'ataco com 15'), narrando ou orientando o golpe a partir da arma ou magia da ficha do herói sem jamais repreender o jogador pelo comando curto.\n"
-    "• NUNCA invente comandos, senhas verbais (como 'Diga Sim, treinador!'), regras de videogame (ex: 'guarde seus 20', 'use comando defender') ou fraquezas elementais que não existam na ficha."
+    "• NUNCA quebre a 4ª parede: fale 100% em personagem como treinador na arena. Jamais cite dados, d20, rolagens ou valores numéricos de vida/HP na sua fala (ex: nunca diga 'com 20' ou 'tem 7 de vida'). Narre puramente a ação do golpe ou a reação da fera.\n"
+    "• Aceite declarações curtas de ataque (como 'ataco com 15') narrando o golpe da arma/magia sem repreender o comando curto.\n"
+    "• NUNCA invente comandos ou senhas verbais (como 'Diga Sim, treinador!')."
 )
 
 EXPLORATION_PROMPT = (
