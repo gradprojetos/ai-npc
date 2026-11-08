@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from api.motor_rpg.motor_rpg import (
     CARD_BY_NAME,
@@ -18,7 +18,7 @@ from api.schemas.rpg import (
     NPCState,
 )
 from api.ai_core.prompts import EXPLORATION_PROMPT
-from db.models import NPC, Hero, Monster, Session
+from db.models import Hero, Monster, Session
 from db.models import Message as MessageDB
 from db.session import SessionLocal
 
@@ -76,8 +76,8 @@ def select_hero_for_player(
         if p.player_id != str(player_id) and arch_name.lower() in p.name.lower():
             return False, f"A carta #{card_num} <b>{arch_name}</b> já foi escolhida por outro recruta!", state
 
-    # Cria a ficha do herói com nome do jogador
-    hero = create_hero(arch_key, player_id=str(player_id), player_name=player_name)
+    # Cria a ficha do herói
+    hero = create_hero(arch_key, player_id=str(player_id))
 
     # Substitui se o mesmo jogador já tinha um herói escolhido
     existing_idx = next((i for i, p in enumerate(state.players) if p.player_id == str(player_id)), None)
@@ -102,12 +102,9 @@ def select_hero_for_player(
     persist_session_state_to_db(state)
 
     msg = (
-        f"<b>Recruta Alistado!</b>\n"
-        f"• Jogador: <b>{player_name}</b>\n"
-        f"• Carta #{card_num}: <b>{arch_name}</b> ({hero.class_name})\n"
-        f"• Vida: {hero.hp}/{hero.max_hp} | CA: {hero.ac} | Ataque: +{hero.attack_bonus} ({hero.attack_name})\n"
-        f"• Poder Especial: <i>{hero.special_power}</i>\n\n"
-        f"<i>Quando todos tiverem escolhido, use <code>/done</code> para iniciar o combate!</i>"
+        f"<b>{player_name}</b> alistou <b>#{card_num} {hero.name}</b> "
+        f"({hero.class_name} | HP {hero.hp}/{hero.max_hp} | CA {hero.ac} | +{hero.attack_bonus} {hero.attack_name} | <i>{hero.special_power}</i>).\n"
+        f"Quando todos escolherem, usem <code>/done</code> para iniciar!"
     )
     return True, msg, state
 
@@ -207,8 +204,13 @@ def get_or_create_session_state(
                 ]
                 players.sort(key=lambda h: get_hero_card_number(h.name))
 
-                # Carrega monstros da sessão
-                db_monsters = db.query(Monster).filter_by(session_id=session_db.session_id).all()
+                # Carrega monstros da sessão em ordem canônica de jaula
+                db_monsters = (
+                    db.query(Monster)
+                    .filter_by(session_id=session_db.session_id)
+                    .order_by(Monster.cage_number.asc(), Monster.id.asc())
+                    .all()
+                )
                 monsters = [
                     MonsterState(
                         name=m.name,
@@ -259,7 +261,7 @@ def get_or_create_session_state(
                     is_victory=session_db.is_victory,
                 )
     except Exception as e:
-        logger.debug(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
+        logger.warning(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
 
     # Cria nova sessão inicial caso não exista no banco
     initial_hero = None
@@ -329,10 +331,10 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
 
             # 3. Atualiza ou insere monsters
             for monster in state.monsters:
-                db_monster = db.query(Monster).filter_by(session_id=session_uuid, name=monster.name).first()
+                db_monster = db.query(Monster).filter_by(session_id=session_record.session_id, name=monster.name).first()
                 if not db_monster:
                     db_monster = Monster(
-                        session_id=session_uuid,
+                        session_id=session_record.session_id,
                         name=monster.name,
                         cage_number=monster.cage_number,
                         hp=monster.hp,
@@ -353,28 +355,53 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
                     db_monster.abilities = monster.abilities
                     db_monster.is_defeated = monster.is_defeated
 
-            # 4. Registra apenas mensagens recentes ainda não persistidas
+            # 4. Registra apenas mensagens recentes ainda não persistidas (comparação monotônica por timestamp)
             if state.recent_messages:
-                last_msg = state.recent_messages[-1]
                 last_db_msg = (
                     db.query(MessageDB)
                     .filter_by(session_id=session_record.session_id)
-                    .order_by(MessageDB.timestamp.desc())
+                    .order_by(MessageDB.timestamp.desc(), MessageDB.id.desc())
                     .first()
                 )
-                if not last_db_msg or last_db_msg.content != last_msg.content:
-                    db_msg = MessageDB(
-                        session_id=session_record.session_id,
-                        sender=last_msg.sender,
-                        role=last_msg.role,
-                        content=last_msg.content,
+                last_db_ts = None
+                if last_db_msg and last_db_msg.timestamp:
+                    last_db_ts = (
+                        last_db_msg.timestamp.replace(tzinfo=UTC)
+                        if last_db_msg.timestamp.tzinfo is None
+                        else last_db_msg.timestamp.astimezone(UTC)
                     )
-                    db.add(db_msg)
+
+                msgs_to_save: list[Message] = []
+                for msg in state.recent_messages:
+                    if msg.timestamp:
+                        parsed_ts = datetime.fromisoformat(msg.timestamp)
+                        parsed_ts = parsed_ts.replace(tzinfo=UTC) if parsed_ts.tzinfo is None else parsed_ts.astimezone(UTC)
+                        if last_db_ts is None or parsed_ts > last_db_ts:
+                            msgs_to_save.append(msg)
+                    elif not last_db_msg or last_db_msg.content != msg.content:
+                        msgs_to_save.append(msg)
+
+                prev_ts = last_db_ts
+                for msg in msgs_to_save:
+                    msg_ts = datetime.fromisoformat(msg.timestamp) if msg.timestamp else datetime.now(UTC)
+                    msg_ts = msg_ts.replace(tzinfo=UTC) if msg_ts.tzinfo is None else msg_ts.astimezone(UTC)
+                    if prev_ts is not None and msg_ts <= prev_ts:
+                        msg_ts = prev_ts + timedelta(microseconds=1)
+                    prev_ts = msg_ts
+                    db.add(
+                        MessageDB(
+                            session_id=session_record.session_id,
+                            sender=msg.sender,
+                            role=msg.role,
+                            content=msg.content,
+                            timestamp=msg_ts,
+                        )
+                    )
 
             db.commit()
             return True
     except Exception as e:
-        logger.debug(f"Não foi possível persistir no banco para session_id={state.session_id}: {e}")
+        logger.warning(f"Não foi possível persistir no banco para session_id={state.session_id}: {e}")
         return False
 
 
@@ -409,7 +436,3 @@ def reset_game_session(identifier: int | str) -> bool:
         logger.warning(f"Erro ao resetar sessão no banco: {e}")
 
     return cleared
-
-
-# Mantém alias para compatibilidade com outros módulos e testes
-reset_player_session = reset_game_session

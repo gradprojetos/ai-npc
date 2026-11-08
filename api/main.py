@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from api.ai_core.orchestrator import process_npc_turn
 from api.motor_rpg.session_service import (
     finish_recruiting_for_session,
-    reset_player_session,
+    reset_game_session,
     select_hero_for_player,
 )
 from api.routers.game import router as game_router
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         try:
             await telegram_service.setup(
                 on_message=process_npc_turn,
-                on_reset=reset_player_session,
+                on_reset=reset_game_session,
                 on_select=select_hero_for_player,
                 on_done=finish_recruiting_for_session,
             )

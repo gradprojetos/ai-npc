@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from api.ai_core.turn_graph import turn_graph
 from api.motor_rpg.session_service import (
@@ -10,26 +11,31 @@ from api.schemas.rpg import GameState, Message
 
 logger = logging.getLogger(__name__)
 
+_PROFANITY_PATTERN = re.compile(
+    r"\b(vai se ferrar|vai se foder|foda-se|fodase|vtnc|fdp|idiota|idiotas|imbecil|imbecis|arrombado|merda|porra|caralho)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def is_noise_input(text: str | None) -> bool:
+    """Identifica entradas vazias ou pontuação isolada, preservando rolagens numéricas de 1–2 dígitos."""
+    if not text or not text.strip():
+        return True
+    if re.fullmatch(r"\s*-?\d+\s*", text):
+        return False
+    alnum_chars = re.findall(r"[a-zA-Z0-9À-ÿ]", text)
+    return len(alnum_chars) < 2
+
 
 async def process_npc_turn(user_message: str, user_info: dict | None = None) -> str:
-    """Orquestra o turno do NPC recebendo a mensagem do jogador e devolvendo a resposta da IA.
-
-    Fluxo:
-    1. Recupera ou inicializa a sessão (PostgreSQL com fallback em memória).
-    2. Registra a mensagem do usuário no buffer recente.
-    3. Executa o ciclo cognitivo e mecânico no LangGraph.
-    4. Persiste o estado atualizado no banco via threadpool assíncrono.
-    5. Retorna a fala de Loomis para o usuário.
-    """
+    """Orquestra o turno do NPC recebendo a mensagem do jogador e devolvendo a resposta da IA."""
     chat_id = user_info.get("chat_id") if user_info else None
     session_id = str(user_info.get("session_id") or chat_id or "default_session") if user_info else "default_session"
 
     logger.info(f"Processando turno do NPC para session_id={session_id}: '{user_message}'")
 
-    # 1. Recupera ou cria estado básico (Jaula 1 ativa com herói) sem travar o loop de eventos
     state = await asyncio.to_thread(get_or_create_session_state, session_id, user_info=user_info)
 
-    # Se a sessão ainda estiver em recrutamento, orienta a finalizar a seleção de cartas
     if state.is_recruiting:
         if not state.players:
             return "A arena ainda está fechada! Escolham seus heróis com <code>/select &lt;1-5&gt;</code> e depois usem <code>/done</code> para começar."
@@ -38,7 +44,12 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
             f"Quando todos tiverem escolhido, digitem <code>/done</code> para Loomis abrir a Jaula 1 e iniciar a luta!"
         )
 
-    # 2. Registra a mensagem do usuário com identificador do jogador
+    if _PROFANITY_PATTERN.search(user_message or ""):
+        return '<b>Loomis:</b>\n"Olha a boca na minha arena, recruta! Mantenha a disciplina e foque no treinamento!"'
+
+    if is_noise_input(user_message):
+        return '<b>Loomis:</b>\n"Fale com clareza, recruta! Diga o que pretende fazer na arena!"'
+
     sender = str(user_info.get("telegram_id") or user_info.get("player_id") or "Jogador") if user_info else "Jogador"
     state.recent_messages.append(
         Message(
@@ -49,14 +60,11 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
         )
     )
 
-    # 3. Executa o grafo do LangGraph
     raw_final = await turn_graph.ainvoke(state)
     final_state = GameState(**raw_final) if isinstance(raw_final, dict) else raw_final
 
-    # 4. Salva o estado atualizado no banco relacional de forma assíncrona
     await asyncio.to_thread(persist_session_state_to_db, final_state, chat_id=chat_id)
 
-    # 5. Retorna a fala gerada pelo Loomis se houver (caso a rodada continue em aberto, retorna string vazia)
     if final_state.recent_messages and final_state.recent_messages[-1].role == "assistant":
         return final_state.recent_messages[-1].content
     return ""

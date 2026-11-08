@@ -63,10 +63,6 @@ class NPCState(BaseModel):
     name: str = "Loomis"
     system_prompt: str = ""
 
-    def heal(self, target: HeroState) -> None:
-        """NPC administra poção ou cura um herói, restaurando seu HP máximo."""
-        target.restore_full_hp()
-
 
 class GameState(BaseModel):
     session_id: str
@@ -80,13 +76,6 @@ class GameState(BaseModel):
     recent_messages: list[Message] = Field(default_factory=list)
     is_recruiting: bool = True
     is_victory: bool = False
-
-    def rotate_players(self) -> HeroState | None:
-        """Rotaciona a fila de iniciativa: o jogador ativo vai para o fim da fila."""
-        if self.players:
-            self.players.append(self.players.pop(0))
-            return self.players[0]
-        return None
 
     def get_last_user_message(self) -> str:
         """Retorna o conteúdo da última mensagem de usuário ou string vazia."""

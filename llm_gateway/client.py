@@ -1,23 +1,65 @@
+import asyncio
 import logging
 import os
+import re
+from abc import ABC, abstractmethod
 from typing import Any
-from dotenv import load_dotenv
 
 import httpx
+from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# valores padrao para comunicacao com o servico llm
-DEFAULT_LLM_URL = "https://llm.ic.unicamp.br/api/chat/completions"
-DEFAULT_LLM_MODEL = "gemma4:e4b"
+DEFAULT_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_IC_URL = "https://llm.ic.unicamp.br/api/chat/completions"
+DEFAULT_IC_MODEL = "gemma4:e4b"
+DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
+
 DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "60"))
 
+_REASONING_MODEL_KEYWORDS = ("gpt-oss", "qwen", "deepseek", "r1", "qwq")
 
-class LLMClient:
-    """Cliente Python assíncrono para comunicação com a API do LLM."""
+
+def _clean_env(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped if stripped else None
+
+
+def _normalize_completions_url(raw_url: str) -> str:
+    cleaned = raw_url.strip()
+    if cleaned and not cleaned.rstrip("/").endswith("/chat/completions"):
+        return cleaned.rstrip("/") + "/chat/completions"
+    return cleaned
+
+
+class BaseLLMAdapter(ABC):
+    """Interface base (Adapter) para provedores de Chat Completions."""
+
+    def __init__(self, api_key: str | None, url: str, model: str) -> None:
+        self.api_key = _clean_env(api_key)
+        self.url = _normalize_completions_url(url)
+        self.model = model.strip()
+
+    @abstractmethod
+    def build_payload(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Monta o payload específico aceito pelo provedor."""
+
+
+class GroqAdapter(BaseLLMAdapter):
+    """Adapter para a API da Groq (OpenAI-compatible estrito, com suporte a modelos de raciocínio)."""
 
     def __init__(
         self,
@@ -25,12 +67,157 @@ class LLMClient:
         url: str | None = None,
         model: str | None = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("LLM_API_KEY")
-        raw_url = url or os.getenv("LLM_API_URL", DEFAULT_LLM_URL)
-        if raw_url and not raw_url.rstrip("/").endswith("/chat/completions"):
-            raw_url = raw_url.rstrip("/") + "/chat/completions"
-        self.url = raw_url
-        self.model = model or os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
+        resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY_GROQ"))
+        resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL_GROQ")) or DEFAULT_GROQ_URL
+        resolved_model = _clean_env(model) or _clean_env(os.getenv("LLM_MODEL_GROQ")) or DEFAULT_GROQ_MODEL
+        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
+
+    def build_payload(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        target_model = (model or self.model).strip()
+        is_reasoning = any(k in target_model.lower() for k in _REASONING_MODEL_KEYWORDS)
+        effective_max_tokens = max_tokens + 120 if is_reasoning else max_tokens
+
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "temperature": temperature,
+            "max_tokens": effective_max_tokens,
+            "messages": messages,
+        }
+        if is_reasoning:
+            payload["reasoning_effort"] = "low"
+            payload["include_reasoning"] = False
+        return payload
+
+
+class OpenRouterAdapter(BaseLLMAdapter):
+    """Adapter para OpenRouter (desativa reasoning tokens para preservar limite de saída)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        resolved_key = (
+            _clean_env(api_key)
+            or _clean_env(os.getenv("LLM_API_KEY_OPENROUTER"))
+            or _clean_env(os.getenv("LLM_API_KEY"))
+        )
+        resolved_url = (
+            _clean_env(url)
+            or _clean_env(os.getenv("LLM_API_URL_OPENROUTER"))
+            or DEFAULT_OPENROUTER_URL
+        )
+        resolved_model = (
+            _clean_env(model)
+            or _clean_env(os.getenv("LLM_MODEL_OPENROUTER"))
+            or DEFAULT_OPENROUTER_MODEL
+        )
+        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
+
+    def build_payload(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "model": (model or self.model).strip(),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "reasoning": {"effort": "none"},
+            "messages": messages,
+        }
+
+
+class ICUnicampAdapter(BaseLLMAdapter):
+    """Adapter para o servidor Ollama/OpenWebUI do IC-Unicamp (inclui options.num_predict)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY"))
+        resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL")) or DEFAULT_IC_URL
+        resolved_model = _clean_env(model) or _clean_env(os.getenv("LLM_MODEL")) or DEFAULT_IC_MODEL
+        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
+
+    def build_payload(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "model": (model or self.model).strip(),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "options": {"num_predict": max_tokens},
+            "messages": messages,
+        }
+
+
+def create_llm_adapter(
+    provider: str | None = None,
+    api_key: str | None = None,
+    url: str | None = None,
+    model: str | None = None,
+) -> BaseLLMAdapter:
+    """Seleciona o Adapter de acordo com o provider ou variável LLM_PROVIDER (default: 'groq')."""
+    selected = (provider or os.getenv("LLM_PROVIDER") or "groq").strip().lower()
+    if url:
+        if "openrouter.ai" in url:
+            return OpenRouterAdapter(api_key=api_key, url=url, model=model)
+        if "unicamp.br" in url:
+            return ICUnicampAdapter(api_key=api_key, url=url, model=model)
+        if "groq.com" in url:
+            return GroqAdapter(api_key=api_key, url=url, model=model)
+
+    if selected == "openrouter":
+        return OpenRouterAdapter(api_key=api_key, url=url, model=model)
+    if selected in {"ic", "unicamp", "ollama"}:
+        return ICUnicampAdapter(api_key=api_key, url=url, model=model)
+    return GroqAdapter(api_key=api_key, url=url, model=model)
+
+
+class LLMClient:
+    """Cliente Python assíncrono para comunicação com a API do LLM (default: GroqAdapter)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> None:
+        self.adapter = create_llm_adapter(
+            provider=provider,
+            api_key=api_key,
+            url=url,
+            model=model,
+        )
+
+    @property
+    def api_key(self) -> str | None:
+        return self.adapter.api_key
+
+    @property
+    def url(self) -> str:
+        return self.adapter.url
+
+    @property
+    def model(self) -> str:
+        return self.adapter.model
 
     async def generate_reply(
         self,
@@ -42,37 +229,38 @@ class LLMClient:
     ) -> str:
         """Envia mensagem para o LLM e retorna o texto da resposta gerada."""
         if not self.api_key:
-            raise ValueError("LLM_API_KEY não configurada nas variáveis de ambiente.")
+            raise ValueError("Chave de API do LLM (ex: LLM_API_KEY_GROQ) não configurada nas variáveis de ambiente.")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
-        # monta a lista de mensagens no padrao chat completions
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": message})
 
-        payload: dict[str, Any] = {
-            "model": model or self.model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "options": {
-                "num_predict": max_tokens,
-            },
-            "messages": messages,
-        }
+        payload = self.adapter.build_payload(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+        )
 
-        # Desativa tokens de raciocínio interno no OpenRouter para modelos de raciocínio (ex: Nemotron)
-        # garantindo que todo o limite de tokens seja aproveitado na geração de fala/resposta visível
-        if "openrouter.ai" in self.url:
-            payload["reasoning"] = {"effort": "none"}
-
-        # envia a requisicao assincrona para o endpoint do gateway
         async with httpx.AsyncClient(timeout=DEFAULT_REQUEST_TIMEOUT) as client:
-            response = await client.post(self.url, headers=headers, json=payload)
+            for attempt in range(2):
+                response = await client.post(self.url, headers=headers, json=payload)
+                if response.status_code == 429 and attempt == 0:
+                    wait_sec = 1.0
+                    match = re.search(r"try again in (\d+(?:\.\d+)?)(ms|s)", response.text)
+                    if match:
+                        val, unit = float(match.group(1)), match.group(2)
+                        wait_sec = (val / 1000.0 if unit == "ms" else val) + 0.1
+                    if wait_sec <= 1.5:
+                        await asyncio.sleep(wait_sec)
+                        continue
+                break
 
             if response.status_code != 200:
                 logger.error(
@@ -82,7 +270,7 @@ class LLMClient:
 
             data: dict[str, Any] = response.json()
             choice_message = data["choices"][0]["message"]
-            content = choice_message.get("content")
-            if not content and choice_message.get("reasoning"):
-                content = choice_message.get("reasoning")
-            return str(content or "").strip()
+            content = str(choice_message.get("content") or "").strip()
+            if not content:
+                raise RuntimeError("LLM retornou resposta vazia.")
+            return content

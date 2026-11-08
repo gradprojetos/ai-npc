@@ -1,154 +1,109 @@
-# Plano de Clean Up Final & Remoção de AI Slop (`refactor/final-cleanup`)
+# Plano de Clean Up Final & Próximos Passos (`refactor/final-cleanup`)
 
-Este documento mapeia todos os *code smells*, *AI slop*, redundâncias, problemas de fronteira arquitetural e bugs ocultos identificados na varredura completa do repositório, estruturando o plano de limpeza final antes da revisão manual de código.
+Roteiro consolidado de implementação **Bottom-Up** validado contra a codebase para corrigir regressões de partida, remover código morto / *AI slop* e manter 100% dos testes E2E verdes sem retrabalho de arquivos.
 
 ---
 
 ## 0. O Que Já Foi Consolidado Nesta Branch
 
-Antes desta etapa, a branch já incorporou duas melhorias estruturais importantes que **devem ser preservadas**:
 1. **Prompts Modulares por Nó ([`api/ai_core/prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py)):** Separação clara entre `EXPLORATION_PROMPT`, `COMBAT_PROMPT` e `TACTICAL_PROMPT`, compartilhando `BASE_FORMAT_RULES` e `GUARDRAILS` sem depender de leitura de prompt monolítico no banco.
 2. **Consolidação das Migrations ([`db/migrations/0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)):** Unificação do histórico fragmentado de migrations (`0001` a `0005`) em um único schema inicial limpo.
 
 ---
 
-## 1. Seção A — Clean Up Cirúrgico (Baixo Risco / Alto Impacto — Recomendado)
+## 1. Roteiro de Implementação — Clean Up Cirúrgico (Bottom-Up)
 
-Foco pragmático: corrigir apenas os **bugs reais de 1 linha** e remover **pegadas cosméticas óbvias de IA** sem alterar o schema do PostgreSQL, sem mexer na estrutura do LangGraph e sem quebrar os testes existentes.
+Sequência estruturada em **6 Fases (Fundação $\rightarrow$ Persistência $\rightarrow$ Prompts $\rightarrow$ Grafo $\rightarrow$ Borda Telegram $\rightarrow$ Testes)** para editar cada arquivo em uma única passagem sem quebrar importadores intermediários:
 
-### A.1. Correção de Bugs Pontuais de Estado e Banco (Sem alterar arquitetura)
-1. **Não usar `state.location` como flag de jaula em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py):** Manter `location` estritamente como descrição do cenário (`"Clareira de Treino em Hesiod"`) e corrigir a detecção de combate ativo em `route_intent` sem depender de `"Aberta" in state.location`.
-2. **Chave estrangeira uniforme e preservação de monstros derrotados em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332) e [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L328):** Trocar `session_uuid` por `session_record.session_id` ao fazer upsert de `Monster` e usar `state.monsters.append(next_beast)` (em vez de `state.monsters = [next_beast]`) para que o monstro derrotado seja salvo com `hp=0, is_defeated=True` no banco e não "ressuscite" no turno seguinte.
-3. **Salvar mensagens do jogador em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L357-L373):** Salvar todas as mensagens novas do turno (`user` e `assistant`), e não apenas `state.recent_messages[-1]`.
+### Fase 1: Camada de Dados, Schemas e Motor RPG (Fundação)
+- [x] **1.1. [`db/session.py`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L20-L26) e [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py#L14-L22):**
+  - Remover função morta `get_db()` de `db/session.py`.
+  - Importar `DATABASE_URL` diretamente de `db.session` em `db/env.py` (eliminando a duplicação de `os.getenv`).
+- [x] **1.2. [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py):**
+  - Remover métodos mortos [`NPCState.heal()` (L66-L68)](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68) e [`GameState.rotate_players()` (L84-L89)](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89).
+- [x] **1.3. [`api/motor_rpg/motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152):**
+  - Remover parâmetro morto `player_name: str | None = None` da assinatura de `create_hero()`.
 
-### A.2. Limpeza Cosmética e Código Morto Óbvio (Risco Zero)
-1. **Remover imports e funções mortas sem impacto:**
-   * Remover import não utilizado `NPC` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L21).
-   * Remover função [`get_db()`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L20-L26) não utilizada e importar `DATABASE_URL` de `db/session.py` em [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py#L14-L22).
-   * Remover método morto [`NPCState.heal`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68), método morto [`GameState.rotate_players`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) (e sua chamada em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279)), parâmetro ignorado `player_name` em [`create_hero`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152) e alias `reset_player_session` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L409).
-2. **Alinhar texto do `/start` no [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L166-L167):** Corrigir a descrição do poder especial de Yarrow (*"Grilhões Espectrais"*) para bater com [`HERO_ARCHETYPES`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L65).
-3. **Limpar comentários óbvios de IA e `logger.debug` silencioso:** Remover comentários redundantes que apenas repetem o código e trocar `logger.debug` por `logger.warning` nas exceções de banco em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L262).
-4. **Manter avaliação por IA no [`classify_intent`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L41) e determinismo restrito a comandos/onboarding:** Toda mensagem aberta de jogo deve passar pelo julgamento da IA em `classify_intent` (já que frases como *"se eu disser ataco com 18..."* podem ser dúvidas táticas; regex permanece exclusivamente como fallback se a API falhar). Apenas comandos explícitos (`/start`, `/select`, `/done`, `/help`, `/reset`) e o fluxo de onboarding são 100% determinísticos sem envolver IA.
+### Fase 2: Serviço de Sessão, Persistência e Rotas (`session_service.py`, `__init__.py`, `main.py`)
+- [x] **2.1. Limpeza de imports, chamadas e aliases em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py), [`api/motor_rpg/__init__.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/__init__.py) e [`api/main.py`](file:///home/isaac/Documents/mc030/ai-npc/api/main.py):**
+  - Remover `NPC` do import em [`session_service.py` (L21)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L21).
+  - Remover argumento `player_name=player_name` na chamada de `create_hero()` em [`session_service.py` (L80)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L80).
+  - Remover alias `reset_player_session = reset_game_session` em [`session_service.py` (L415)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L415) e atualizar **ambos os importadores** para usarem `reset_game_session`: [`api/main.py` (L11 e L31)](file:///home/isaac/Documents/mc030/ai-npc/api/main.py#L11) e [`api/motor_rpg/__init__.py` (L14 e L28)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/__init__.py#L14).
+  - Trocar `logger.debug` por `logger.warning` nas **duas** exceções de banco em [`session_service.py` (L262 e L377)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L262).
+- [x] **2.2. Correção de Persistência no PostgreSQL ([`session_service.py` L331-L373](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L331-L373)):**
+  - **Upsert uniforme de `Monster` ([L332 e L335](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332-L335)):** Usar `session_record.session_id` em vez de `session_uuid` (como já é feito em `Hero` na L305) para garantir que monstros derrotados sejam atualizados com `hp=0, is_defeated=True` e não "ressuscitem" no turno seguinte.
+  - **Persistência completa do diálogo ([L357-L373](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L357-L373)):** Salvar no banco tanto a mensagem `user` quanto a resposta `assistant` do turno (e não apenas `state.recent_messages[-1]`), evitando envenenar o histórico com apenas falas de Loomis.
+- [x] **2.3. Compactação do `/select` ([`session_service.py` L104-L111](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L104-L111)):**
+  - Reduzir o retorno de `select_hero_for_player` de 6 linhas para uma confirmação enxuta de 1–2 linhas (mantendo o nome do herói para compatibilidade com [`test_e2e_coop_game.py` L186](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py#L186)).
 
----
+### Fase 3: Prompts e Regras da LLM (`api/ai_core/prompts.py`)
+- [x] **3.1. Blindagem de [`prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py):**
+  - Em `BASE_FORMAT_RULES`:
+    - Exigir resposta em **texto puro** (proibindo tags HTML/Markdown como `<font>` ou `<i>...</i>` que estouravam os 60 tokens).
+    - Remover a menção a `"voz aguda/anasalada"` para evitar rubricas sonoras (`"Sopro alto e agudo"`).
+    - Adicionar trava estrita de idioma: *"IDIOMA OBRIGATÓRIO: Responda ESTRITAMENTE em Português do Brasil (pt-BR). Jamais use palavras em espanhol ou pontuação invertida (¡, ¿)."*
+  - Em `COMBAT_PROMPT` e `TACTICAL_PROMPT`:
+    - Proibir invenção de comandos/senhas verbais (*"NUNCA peça para os jogadores dizerem frases específicas como 'Sim, treinador!'"*).
+    - Instruir Loomis a aceitar declarações curtas (`ataco com X`), narrando a ação pela arma/magia da ficha sem repreender a sintaxe do jogador.
 
-## 2. Seção B — Refatoração Estrutural Pesada (Alto Impacto Arquitetural / Opcional)
+### Fase 4: Grafo de Turnos e Orquestrador (`turn_graph.py` e `orchestrator.py`)
+- [x] **4.1. Filtro Pré-Grafo de Ruído e Ofensas ([`orchestrator.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/orchestrator.py) / [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py)):**
+  - Interceptar antes do grafo mensagens de pontuação isolada (`.`, `?`, `!`, `< 2` caracteres alfanuméricos, liberando rolagens numéricas de 1–2 dígitos) e ofensas explícitas (regex determinístico), respondendo estaticamente sem chamar a LLM e sem alterar o estado da arena.
+  - Manter `classify_intent` ([L50](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L50)) avaliando toda mensagem livre legítima via IA (regex apenas como fallback de erro de rede).
+- [x] **4.2. Ciclo de Combate, Estado de Jaula e Validação de d20 ([`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py)):**
+  - Remover chamada morta `state.rotate_players()` ([L332](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L332)).
+  - **Preservação de monstros derrotados ([L328](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L328)):** Trocar `state.monsters = [next_beast]` por `state.monsters.append(next_beast)` para que monstros com `0 HP` sejam salvos no banco como derrotados.
+  - **Preservação de `state.location` e separação de abertura da jaula vs. validação de d20:**
+    - Remover as mutações `state.location = "Arena de Hesiod — Jaula X Aberta"` em `exploration_node` ([L147](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L147)) e `combat_node` ([L208-L210](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L208-L210)), mantendo `state.location` fixo como `"Clareira de Treino em Hesiod"`.
+    - Rastrear o início do combate de forma explícita e separar os 3 cenários em `combat_node` ([L230-L243](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L230-L243)):
+      1. **Abertura inicial da Jaula 1** (ex: `"estamos prontos"` quando a luta ainda não começou): anuncia `"• A Jaula 1 foi aberta..."` e aciona Loomis (preservando [`test_e2e_coop_game.py` L109](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py#L109)).
+      2. **Valor de d20 inválido fora de `1–20`** (ex: `ataco com 50`): retorna aviso determinístico imediato do DM (`"• Valor inválido! O d20 físico possui apenas valores de 1 a 20..."`) sem reanunciar abertura de jaula e sem chamar LLM.
+      3. **Ataque no meio da luta sem informar número do d20**: pede apenas o valor de 1 a 20 sem repetir que a jaula foi aberta.
+    - Atualizar `route_intent` ([L513](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L513)) para detectar combate ativo sem usar `"Aberta" in state.location`.
+- [x] **4.3. Identificação do Herói e Sanitização HTML no `npc_node` ([`turn_graph.py` L448-L484](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L448-L484)):**
+  - Identificar o herói correspondente ao `sender` da última mensagem e formatar `Última mensagem enviada por {hero_name}: "{last_user_message}"` nas L455 e L458 (evitando que Loomis dê bronca no herói errado).
+  - No pós-processamento ([L479-L484](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L479-L484)), remover tags HTML residuais (`re.sub(r"<[^>]+>", "", speech)`), prefixos `Loomis:` e aspas duplicadas antes de envelopar em `<b>Loomis:</b>\n"{speech}"`.
 
-Mudanças profundas de modelagem de banco, ORM e redistribuição de responsabilidades entre módulos (maior risco de regressão, exigiriam recriar schema do banco e reescrever testes):
+### Fase 5: Borda Telegram (`telegram_bot/telegram_service.py`)
+- [x] **5.1. Onboarding Conciso e Single Source of Truth ([`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py)):**
+  - Em `_start_handler` ([L156-L171](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L156-L171)), consumir `HERO_CARDS` e `HERO_ARCHETYPES` diretamente de [`motor_rpg.py` (L57-L66)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L57-L66) (corrigindo automaticamente o poder de Yarrow para *"Grilhões Espectrais"*) em formato compacto (1 linha por herói).
+  - Em `_reset_handler` ([L276-L281](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L276-L281)), unificar o aviso de sessão reiniciada + catálogo em uma única mensagem (eliminando o envio duplo).
 
-### Lote 1: Espelhamento 1:1 (`GameState` ↔ PostgreSQL), Persistência e Bugs de Banco
-*(Arquivos: [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), [`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py), [`db/migrations/0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py), [`db/session.py`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py), [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py), [`api/motor_rpg/session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py), [`api/ai_core/orchestrator.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/orchestrator.py))*
-
-* **Fix 1.1 — Espelhamento 1:1 (`GameState` ↔ `Session`) e Fim do Estado Global Volátil**
-  * **Problema:**
-    1. [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L14-L16) guarda estado crítico da sessão (`_round_buffers`, `_exploration_counters`, `_last_monster_targets`) em dicionários globais mutáveis em RAM porque esses campos não existiam no banco nem no `GameState`.
-    2. [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L248) deduz `is_recruiting = len(db_messages) == 0` por falta da coluna na tabela `sessions`.
-  * **Solução:**
-    * Adicionar `is_recruiting` (`Boolean`), `round_actions` (`JSONB`), `exploration_turns` (`Integer`) e `last_monster_target` (`String`) na tabela `sessions` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py) e [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)) e no [`GameState`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py).
-    * Deletar `_round_buffers`, `_exploration_counters` e `_last_monster_targets` de `turn_graph.py` e atualizar [`tests/test_e2e_coop_game.py`](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py) para não importar mais essas variáveis privadas.
-
-* **Fix 1.2 — Bug Crítico: Salvar todas as mensagens do turno no PostgreSQL**
-  * **Problema:** Em [`orchestrator.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/orchestrator.py#L43-L57), a mensagem do usuário (`role="user"`) e a resposta de Loomis (`role="assistant"`) são adicionadas ao `state.recent_messages` antes de chamar `persist_session_state_to_db`. Porém, [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L358) inspeciona apenas `state.recent_messages[-1]`, descartando todas as mensagens dos jogadores.
-  * **Solução:** Persistir todas as mensagens novas do turno (tanto `user` quanto `assistant`) na tabela `messages`.
-
-* **Fix 1.3 — Bug: Unificar chave estrangeira (`session_record.session_id`) e Eliminar N+1 Queries / Boilerplate**
-  * **Problema:**
-    1. Em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L305), o upsert de `Hero` usa `session_record.session_id`, mas o upsert de `Monster` ([L332](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L332)) usa `session_uuid`.
-    2. [`get_or_create_session_state`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L187-L234) faz 4 `SELECT`s separados ignorando os `relationship()` de [`Session`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L44-L58), e [`persist_session_state_to_db`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L304-L355) faz `SELECT` em loop `for` para cada herói e monstro, com ~100 linhas de cópia manual de atributos e `except Exception` silenciosos em `logger.debug`.
-  * **Solução:** Carregar `Session` com `selectinload(Session.heroes, Session.monsters)`, converter com `ConfigDict(from_attributes=True)` / `model_validate()`, atualizar entidades via relacionamentos usando sempre `session_record.session_id`, remover `try...except: pass` cegos e trocar `logger.debug` por `logger.warning`.
-
-* **Fix 1.4 — Limpeza de Código Morto na Camada de Banco (`db/`)**
-  * **Problema:** Com os prompts modulares em [`prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py), o modelo `NPC` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L149-L160)), a tabela `npcs` em [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py#L121-L150) e o import `NPC` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L21) ficaram sem uso. Além disso, [`get_db()`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L20-L26) nunca é chamado e `DATABASE_URL` está duplicada entre [`db/session.py`](file:///home/isaac/Documents/mc030/ai-npc/db/session.py#L6-L14) e [`db/env.py`](file:///home/isaac/Documents/mc030/ai-npc/db/env.py#L14-L22).
-  * **Solução:** Remover o modelo/tabela morta `NPC`, remover `get_db()`, e importar `DATABASE_URL` diretamente de `db/session.py` em `db/env.py` (mantendo o `pgvector` intacto na imagem e no `pyproject.toml` para não invalidar o `uv.lock`).
-
----
-
-### Lote 2: Eliminação de AI Slop no Grafo e Separação com o Motor RPG
-*(Arquivos: [`api/ai_core/turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py), [`api/motor_rpg/motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py), [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py))*
-
-* **Fix 2.1 — Bug & Slop: Retorno consistente de estado nos nós do LangGraph**
-  * **Problema:** Os nós do grafo mutam `state` in-place e retornam dicionários parciais. No [`exploration_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L138), ao atingir 7 mensagens, `state.location` é atualizado para abrir a Jaula 1, mas `"location"` não é retornado no `dict` da [L160](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L160), fazendo a mutação se perder.
-  * **Solução:** Garantir que todos os campos modificados em cada nó (`location`, `last_context`, `npcs`, `players`, `monsters`, `is_victory`, `recent_messages`, `round_actions`, `exploration_turns`, `last_monster_target`) sejam retornados de forma consistente.
-
-* **Fix 2.2 — Eliminar Acoplamento por Substring em HTML ("Stringly-Typed State")**
-  * **Problema:** O fluxo toma decisões procurando trechos de texto dentro de strings formatadas:
-    * `"HP: 0/" in (state.last_context or "")` ([L359](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L359))
-    * `[a for a in round_actions if "atacou" in a]` ([L283](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L283))
-    * `"Roleplay e Exploração" in (state.last_context or "")` ([L363](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L363))
-    * `"Dungeon Master:" in state.last_context` ([L399](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L399))
-  * **Solução:** Substituir checagens de substring em HTML por estado explícito e verificações diretas nas entidades do domínio (`monster.is_defeated`, contagem de ações da rodada em `state.round_actions`).
-
-* **Fix 2.3 — Devolver Regras de Combate para [`motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py) e Corrigir Lista de Monstros / Cura**
-  * **Problema:**
-    1. [`resolve_hero_attack`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L203-L235) e [`resolve_monster_attack`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L238-L271) têm código duplicado e retornam dicionários de 12 chaves sem uso, enquanto as regras reais (escolha de alvo do monstro, gatilho de 50% de HP, cura do Loomis e progressão das 4 jaulas) estão em `combat_node`.
-    2. Na troca de jaula ([`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L275)), `state.monsters = [next_beast]` sobrescreve a lista em RAM apagando os monstros derrotados, divergindo do banco.
-    3. Se todos os heróis caírem a `0 HP` no contra-ataque do monstro, ninguém consegue atacar para matar o monstro e acionar a cura, causando *soft-lock*.
-  * **Solução:** Unificar a resolução de ataque em `motor_rpg.py`, mover as funções de domínio de combate para lá, usar `state.monsters.append(next_beast)` sem apagar monstros derrotados e garantir que Loomis cure com poção caso o grupo inteiro caia inconsciente (conforme [`docs/game_rules.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/game_rules.md#L82)).
-
-* **Fix 2.4 — Remover Injeção de Dados "Fantasmas", `dummy_ids` e `rotate_players()` Morto**
-  * **Problema:**
-    1. [`combat_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L177-L180) injeta um `"jorick"` silencioso se `state.players` estiver vazio, e [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L88-L96) usa `dummy_ids = {"default", "player_1", "", str(session_id)}`.
-    2. [`state.rotate_players()`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L84-L89) gira a lista em RAM na [L279 de turn_graph.py](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L279), mas [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L208) reordena `players.sort()` pelo número da carta a cada leitura, tornando `rotate_players()` inútil (já que o atacante é identificado pelo `sender`).
-  * **Solução:** Remover a injeção de herói fantasma, o set `dummy_ids` e o método morto `rotate_players()`.
-
-* **Fix 2.5 — Simplificar `extract_d20` e Unificar Trava Anti-Dispersão (Mantendo IA no `classify_intent`)**
-  * **Problema:**
-    1. [`extract_d20`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L34-L36) captura qualquer número de 1 a 20 solto na frase e ignora validação de números fora do intervalo (como `50` ou `40`).
-    2. Checagens anti-dispersão estão espalhadas em 3 lugares (`classify_intent`, `route_intent` e `tactical_advice_node`).
-  * **Solução:** Manter `classify_intent` avaliando cada mensagem livre via IA (com regex apenas como fallback de erro de rede), garantir que comandos (`/help`, `/start`, `/select`, `/done`, `/reset`) e onboarding sejam 100% determinísticos sem IA, e centralizar a trava de combate ativo em `route_intent`.
+### Fase 6: Validação E2E e Auditoria Final
+- [x] **6.1.** Rodar `pytest tests/test_e2e_coop_game.py` garantindo 100% de aprovação.
+- [x] **6.2.** Invocar subagente de auditoria (`research`) sobre a base modificada para confirmar ausência de regressões ou *AI slop*.
 
 ---
 
-### Lote 3: Redundâncias, Tipagem e Clientes de Borda
-*(Arquivos: [`telegram_bot/telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py), [`llm_gateway/client.py`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py), [`api/schemas/rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), [`api/motor_rpg/motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py), [`api/main.py`](file:///home/isaac/Documents/mc030/ai-npc/api/main.py))*
+## 2. Backlog Opcional — Refatoração Estrutural Pesada (Seção B)
 
-* **Fix 3.1 — Fonte Única para o Catálogo de Heróis (`/start` vs `HERO_ARCHETYPES`)**
-  * **Problema:** O texto de `/start` em [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L156-L171) reescreve manualmente os status dos 5 heróis e diverge de [`HERO_ARCHETYPES`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L57-L66) (ex: Yarrow descrito com *"Espírito da Floresta"* no bot vs *"Grilhões Espectrais"* no motor).
-  * **Solução:** Sincronizar a listagem de cartas a partir do catálogo canônico de `motor_rpg.py`.
+Mudanças profundas de modelagem de banco, ORM e arquitetura (maior risco de regressão; exigem alterar schema/migrations e testes):
 
-* **Fix 3.2 — Remoção de Parâmetros, Métodos e Aliases Mortos**
-  * **Problema:**
-    * Parâmetro `player_name` em [`create_hero`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py#L152) é recebido e ignorado.
-    * Método [`NPCState.heal`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py#L66-L68) nunca é chamado.
-    * Alias `reset_player_session = reset_game_session` em [`session_service.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L409) é desnecessário.
-  * **Solução:** Remover os elementos mortos e importar `reset_game_session` diretamente em [`api/main.py`](file:///home/isaac/Documents/mc030/ai-npc/api/main.py#L11).
+### Lote 1: Espelhamento 1:1 (`GameState` ↔ PostgreSQL) e Remoção de Estado Global em RAM
+* **Fix 1.1 — Eliminar os 4 dicionários globais voláteis de [`turn_graph.py` (L14-L17)](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L14-L17):**
+  * Mover `_round_buffers`, `_acted_heroes`, `_exploration_counters` e `_last_monster_targets` (além de `is_recruiting` deduzido em [`session_service.py` L248](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L248)) para colunas explícitas na tabela `sessions` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py), [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)) e no [`GameState`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), atualizando [`test_e2e_coop_game.py` (L6)](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py#L6).
+* **Fix 1.2 — Eliminar N+1 Queries em [`session_service.py` (L187-L234 e L304-L355)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L187-L234):**
+  * Usar `selectinload(Session.heroes, Session.monsters)` e `ConfigDict(from_attributes=True)` / `model_validate()`.
+* **Fix 1.3 — Remover modelo `NPC` ([`db/models.py` L149-L160](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L149-L160)) e tabela `npcs` ([`0001_initial.py` L121-L150](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py#L121-L150)).**
 
-* **Fix 3.3 — Limpeza do [`LLMClient`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py) e Envio HTML no Telegram**
-  * **Problema:** Triplo `try/except` aninhado e repetido em cada handler de [`telegram_service.py`](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L343-L355) para envio de mensagens HTML com fallback texto puro.
-  * **Solução:** Extrair um único método auxiliar `_safe_reply(message, text)` no `TelegramService` e limpar comentários óbvios no `LLMClient`.
-
-* **Fix 3.4 — Ajustes de Partida Real e Prompts (Detalhado em [`docs/diagnostico_bugs.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/diagnostico_bugs.md))**
-  * **Proibir HTML na saída da LLM (`prompts.py`):** Exigir texto puro (evitando `<font color="#8B4513">` e rubricas `<i>Sopro alto e agudo</i>` que consomem os 60 tokens), adicionar trava estrita de Português (pt-BR) e proibir invenção de senhas verbais (*"Diga SIM, TREINADOR"*).
-  * **Validação de d20 fora de 1–20 (`turn_graph.py`):** Tratar rolagens inválidas (ex: `ataco com 50`) com aviso direto do DM, sem reanunciar abertura de jaula e sem acionar a LLM.
-  * **Preservar `state.location`:** Manter `location` apenas como descrição de cena (`"Clareira de Treino em Hesiod"`), sem sobrescrevê-lo com status de jaula.
-  * **Enxugar verbosidade do Onboarding:** Reduzir a confirmação do `/select` para 1–2 linhas e unificar a mensagem do `/reset`.
+### Lote 2: Desacoplamento de Substrings HTML e Separação Grafo ↔ Motor RPG
+* **Fix 2.1 — Eliminar acoplamento por substring em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py):**
+  * Substituir checagens de texto em `state.last_context` ([L419-L423](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L419-L423), [L443](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L443), [L447](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L447), [L474](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L474), [L486](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L486)) por flags/estado explícito.
+* **Fix 2.2 — Devolver regras de combate para [`motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py) e evitar *soft-lock* de party wipe.**
+* **Fix 2.3 — Remover injeção de `"jorick"` fantasma ([`turn_graph.py` L186-L187](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L186-L187)) e `dummy_ids` ([`session_service.py` L88-L96](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L88-L96)).**
+* **Fix 2.4 — Extrair helper `_safe_reply` em [`telegram_service.py` (L343-L355)](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L343-L355).**
 
 ---
 
-## 3. Gateway Multi-Provedor LLM (Strategy + Adapter Pattern)
+## 3. Evoluções Futuras (Gateway Multi-Provedor & Documentação)
 
-Desacoplar as particularidades de cada provedor em [`llm_gateway/`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py) mantendo a fachada `LLMClient` 100% retrocompatível:
+### 3.1. Gateway Multi-Provedor LLM (Strategy + Adapter Pattern em [`llm_gateway/`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py))
+- [ ] Criar interface `LLMProvider` em `llm_gateway/providers/base.py`.
+- [ ] Implementar `OpenRouterProvider`, `ICUnicampProvider` e `NvidiaBuildProvider`.
+- [ ] Implementar `LLMProviderFactory` em `llm_gateway/factory.py` via `LLM_PROVIDER` no `.env`.
 
-- [ ] **3.1.** Criar a interface abstrata `LLMProvider` (Strategy) em `llm_gateway/providers/base.py`.
-- [ ] **3.2.** Implementar `OpenRouterProvider`, `ICUnicampProvider` e `NvidiaBuildProvider`.
-- [ ] **3.3.** Implementar `LLMProviderFactory` em `llm_gateway/factory.py` selecionando via `LLM_PROVIDER` no `.env`.
-
----
-
-## 4. Atualização da Documentação de Arquitetura ([`docs/architecture.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/architecture.md))
-
-Pontos do documento de arquitetura que estão defasados em relação ao código atual e precisam ser alinhados:
-
-- [ ] **4.1. Ciclo Cognitivo no LangGraph (Seção 5):** Atualizar o diagrama de estados para incluir as 3 rotas reais (`exploration_node`, `tactical_advice_node`, `combat_node`), os prompts modulares de [`api/ai_core/prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py) e o retorno imediato do DM no meio da rodada (`is_mid_round_turn`).
-- [ ] **4.2. Persistência vs. Memória (Seção 3):** Atualizar o diagrama de sequência para remover o antigo `SessionManager (Memória)` como fonte primária e refletir o PostgreSQL como *Single Source of Truth*.
-- [ ] **4.3. Dinâmica de Rodada Fechada vs. "Monsters First" (Seção 4.2):** Alinhar a descrição das regras com a implementação atual de rodada fechada por iniciativa e com o prólogo de exploração pós-`/done`.
-- [ ] **4.4. Status do Langfuse (Seções 1 e 3):** Sinalizar o Langfuse como integração planejada/futura (atualmente pausada no código).
-
----
-
-## 5. Roteiro de Execução e Validação (4 Etapas)
-
-- [ ] **Etapa 1 — Execução (Seção A ou A+B):** Aplicar os ajustes cirúrgicos da **Seção A** + **Fix 3.4** (e opcionalmente itens escolhidos da **Seção B**).
-- [ ] **Etapa 2 — Bateria de Testes E2E:** Rodar [`tests/test_e2e_coop_game.py`](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py) garantindo 100% de aprovação.
-- [ ] **Etapa 3 — Nova Auditoria Cega por Subagente:** Invocar novamente o subagente de auditoria (`research`) sobre a base limpa para confirmar que nenhum *AI slop*, código morto ou inconsistência restou.
-- [ ] **Etapa 4 — Revisão Humana Final:** Leitura manual completa de todos os arquivos antes do merge para a `main`.
+### 3.2. Atualização da Documentação de Arquitetura ([`docs/architecture.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/architecture.md))
+- [ ] **Seção 5 (LangGraph):** Atualizar diagrama com as 3 rotas (`exploration_node`, `tactical_advice_node`, `combat_node`), prompts modulares e `is_mid_round_turn`.
+- [ ] **Seção 3 (Persistência):** Refletir o PostgreSQL como *Single Source of Truth* (sem `SessionManager` em memória).
+- [ ] **Seção 4.2 (Dinâmica de Rodada):** Alinhar com rodada fechada por iniciativa e prólogo de exploração pós-`/done`.
+- [ ] **Seções 1 e 3 (Langfuse):** Sinalizar Langfuse como integração planejada/futura.

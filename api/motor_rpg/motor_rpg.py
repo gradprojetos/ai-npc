@@ -149,7 +149,7 @@ def roll_dice(sides: int = 20) -> int:
     return random.randint(1, sides)
 
 
-def create_hero(archetype_or_name: str | int, player_id: str = "player_1", player_name: str | None = None) -> HeroState:
+def create_hero(archetype_or_name: str | int, player_id: str = "player_1") -> HeroState:
     """Cria uma instância de HeroState a partir de um arquétipo válido ou número da carta."""
     raw = str(archetype_or_name).strip().lower()
     if raw.isdigit() and int(raw) in HERO_CARDS:
