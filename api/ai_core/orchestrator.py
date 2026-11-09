@@ -7,6 +7,7 @@ from api.motor_rpg.session_service import (
     persist_session_state_to_db,
 )
 from api.schemas.rpg import GameState, Message
+from api.ai_core.guardrails import apply_input_guardrails
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,21 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     )
+
+    # 2.1 Checagem de guardrails de entrada (anti-palavrão e anti-injeção de prompt)
+    input_check = apply_input_guardrails(user_message)
+    if not input_check.passed and input_check.reprimand:
+        reprimand_content = f"<b>Loomis:</b>\n\"{input_check.reprimand}\""
+        state.recent_messages.append(
+            Message(
+                sender="Loomis",
+                content=reprimand_content,
+                role="assistant",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        await asyncio.to_thread(persist_session_state_to_db, state, chat_id=chat_id)
+        return reprimand_content
 
     # 3. Executa o grafo do LangGraph
     raw_final = await turn_graph.ainvoke(state)
