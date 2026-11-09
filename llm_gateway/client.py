@@ -183,6 +183,7 @@ class LLMClient:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         model: str | None = None,
+        guardrail_output: bool = False,
     ) -> str:
         """Envia mensagem para o LLM e retorna o texto da resposta gerada."""
         if not self.api_key:
@@ -230,4 +231,10 @@ class LLMClient:
             content = str(choice_message.get("content") or "").strip()
             if not content:
                 raise RuntimeError("LLM retornou resposta vazia.")
+            if guardrail_output:
+                try:
+                    from api.ai_core.guardrails import apply_output_guardrails
+                    return apply_output_guardrails(content).text
+                except Exception as e:
+                    logger.warning(f"Erro ao aplicar guardrails na resposta do LLM: {e}")
             return content

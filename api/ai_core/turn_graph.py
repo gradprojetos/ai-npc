@@ -11,6 +11,7 @@ from api.ai_core.prompts import (
     TACTICAL_PROMPT,
     INTENT_CLASSIFICATION_PROMPT,
 )
+from api.ai_core.guardrails import apply_output_guardrails
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
@@ -616,7 +617,14 @@ async def npc_node(state: GameState) -> dict:
         else:
             resposta_texto = "Fiquem atentos e mantenham a formação! Hesiod conta com a coragem de vocês!"
 
-    speech = re.sub(r"<[^>]+>", "", resposta_texto).strip()
+    # Aplica guardrails determinísticos de saída (anti-palavrão, garantia de idioma pt-BR e formatação)
+    guardrail_res = apply_output_guardrails(
+        resposta_texto,
+        context=state.last_context,
+        is_victory=state.is_victory,
+        monster_fell=monster_fell,
+    )
+    speech = re.sub(r"<[^>]+>", "", guardrail_res.text).strip()
     speech = re.sub(r'^["\'«»\s]*(?:Loomis\s*:\s*["\'«»\s]*)+', "", speech, flags=re.IGNORECASE).strip()
     speech = speech.strip("\"'«»").strip()
 
