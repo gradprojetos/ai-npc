@@ -7,6 +7,7 @@ from llm_gateway.client import LLMClient
 from api.motor_rpg.motor_rpg import resolve_hero_attack, resolve_monster_attack, get_cage_monster, create_hero
 from db.models import NPC
 from db.session import SessionLocal
+from api.ai_core.guardrails import DEFAULT_LOOMIS_SYSTEM_PROMPT, apply_output_guardrails
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
@@ -347,6 +348,8 @@ async def npc_node(state: GameState) -> dict:
                     effective_system_prompt = db_npc.system_prompt
         except Exception as e:
             logger.debug(f"Não foi possível carregar prompt do NPC do banco: {e}")
+    if not effective_system_prompt:
+        effective_system_prompt = DEFAULT_LOOMIS_SYSTEM_PROMPT
 
     monster_fell = "HP: 0/" in (state.last_context or "") or any(m.is_defeated for m in state.monsters)
     defeated_tag = "\n[MONSTRO DERROTADO]" if monster_fell else ""
@@ -385,7 +388,14 @@ async def npc_node(state: GameState) -> dict:
         else:
             resposta_texto = "Fiquem atentos às fraquezas da fera e mantenham a formação! Hesiod conta com a coragem de vocês!"
 
-    speech = resposta_texto.strip()
+    # Aplica guardrails determinísticos de saída (anti-palavrão, garantia de idioma pt-BR e formatação)
+    guardrail_res = apply_output_guardrails(
+        resposta_texto,
+        context=state.last_context,
+        is_victory=state.is_victory,
+        monster_fell=monster_fell,
+    )
+    speech = guardrail_res.text
 
     # Compõe mensagem final com bloco do Dungeon Master se for combate
     if state.last_context and "Dungeon Master:" in state.last_context:

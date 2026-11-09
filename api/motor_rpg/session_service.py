@@ -23,6 +23,9 @@ from db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
+# Fallback em memória ativado apenas caso o PostgreSQL esteja indisponível (ex: testes locais sem container)
+_FALLBACK_SESSIONS: dict[str, GameState] = {}
+
 
 def create_initial_rpg_state(
     session_id: str,
@@ -269,6 +272,8 @@ def get_or_create_session_state(
                 )
     except Exception as e:
         logger.debug(f"Acesso ao banco ignorado ou indisponível ao carregar session_id={session_id}: {e}")
+        if str(session_id) in _FALLBACK_SESSIONS:
+            return _FALLBACK_SESSIONS[str(session_id)]
 
     # Cria nova sessão inicial caso não exista no banco
     initial_hero = None
@@ -277,12 +282,14 @@ def get_or_create_session_state(
         initial_hero = create_hero(default_archetype, player_id=player_id)
 
     new_state = create_initial_rpg_state(session_id=session_id, initial_hero=initial_hero)
+    _FALLBACK_SESSIONS[str(session_id)] = new_state
     persist_session_state_to_db(new_state, chat_id=chat_id_int)
     return new_state
 
 
 def persist_session_state_to_db(state: GameState, chat_id: int | None = None) -> bool:
     """Persiste o GameState nas tabelas relacionais explícitas (sessions, heroes, monsters, messages)."""
+    _FALLBACK_SESSIONS[str(state.session_id)] = state
     try:
         norm_chat_id, session_uuid = normalize_session_id(state.session_id)
         chat_id_int = chat_id if chat_id is not None else norm_chat_id
@@ -390,6 +397,7 @@ def persist_session_state_to_db(state: GameState, chat_id: int | None = None) ->
 def reset_game_session(identifier: int | str) -> bool:
     """Apaga completamente a sessão do jogo (arena, monstros, todos os heróis e histórico) no banco."""
     logger.info(f"Resetando sessão completa de jogo para identifier={identifier}")
+    _FALLBACK_SESSIONS.pop(str(identifier), None)
     cleared = False
     chat_id_int, session_uuid = normalize_session_id(identifier)
 
