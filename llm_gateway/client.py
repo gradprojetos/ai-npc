@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_IC_URL = "https://llm.ic.unicamp.br/api/chat/completions"
-DEFAULT_IC_MODEL = "gemma4:e4b"
 DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 
@@ -148,7 +147,12 @@ class ICUnicampAdapter(BaseLLMAdapter):
     ) -> None:
         resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY"))
         resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL")) or DEFAULT_IC_URL
-        resolved_model = _clean_env(model) or _clean_env(os.getenv("LLM_MODEL")) or DEFAULT_IC_MODEL
+        resolved_model = (
+            _clean_env(model)
+            or _clean_env(os.getenv("LLM_MODEL_IC"))
+            or _clean_env(os.getenv("LLM_MODEL"))
+            or ""
+        )
         super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
 
     def build_payload(
