@@ -5,6 +5,7 @@ from llm_gateway.client import (
     GroqAdapter,
     ICUnicampAdapter,
     LLMClient,
+    NvidiaBuildAdapter,
     OpenRouterAdapter,
     create_llm_adapter,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "GroqAdapter",
     "ICUnicampAdapter",
     "LLMClient",
+    "NvidiaBuildAdapter",
     "OpenRouterAdapter",
     "create_llm_adapter",
 ]

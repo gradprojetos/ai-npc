@@ -5,7 +5,12 @@ from langgraph.graph import StateGraph, START, END
 from api.schemas.rpg import GameState, HeroState, Message, MonsterState
 from llm_gateway.client import LLMClient
 from api.motor_rpg.motor_rpg import resolve_hero_attack, resolve_monster_attack, get_cage_monster, create_hero
-from api.ai_core.prompts import EXPLORATION_PROMPT, COMBAT_PROMPT, TACTICAL_PROMPT
+from api.ai_core.prompts import (
+    EXPLORATION_PROMPT,
+    COMBAT_PROMPT,
+    TACTICAL_PROMPT,
+    INTENT_CLASSIFICATION_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 llm_client = LLMClient()
@@ -109,23 +114,15 @@ async def extract_d20(text: str) -> int | None:
 
 async def classify_intent(text: str) -> str:
     """Classifica a intenção da mensagem via LLM ('combat', 'tactical_advice' ou 'exploration')."""
-    if not text.strip():
+    if not text or not text.strip():
         return "exploration"
 
-    prompt = (
-        "Classifique a mensagem do jogador de RPG em APENAS UMA categoria ('combat', 'tactical_advice' ou 'exploration'):\n"
-        "- 'combat': Ataques, golpes, magias ofensivas, qualquer rolagem numérica ou número isolado (ex: '7', '15', 'ataco com 20', 'ataco com 50'), "
-        "OU avisar que estão prontos / pedir para Loomis puxar a alavanca ou abrir a jaula (ex: 'estamos prontos', 'puxe a alavanca', 'vamos lutar', 'solte a fera').\n"
-        "- 'tactical_advice': Dúvidas sobre regras, fraquezas do monstro ou como usar poderes da ficha.\n"
-        "- 'exploration': Conversa sobre a vila de Hesiod, cabana, caldeirão, lore, ou tentar arrombar a jaula escondido sem autorização.\n"
-        "Responda APENAS uma palavra: combat, tactical_advice ou exploration."
-    )
     try:
         response = await llm_client.generate_reply(
             message=text,
-            system_prompt=prompt,
+            system_prompt=INTENT_CLASSIFICATION_PROMPT,
             temperature=0.0,
-            max_tokens=15,
+            max_tokens=10,
         )
         decision = response.strip().lower()
         if "combat" in decision:
@@ -134,17 +131,7 @@ async def classify_intent(text: str) -> str:
             return "tactical_advice"
         return "exploration"
     except Exception as e:
-        logger.warning(f"Falha ao classificar intenção via LLM ({repr(e)}), aplicando fallback por regex.")
-        d20 = await extract_d20(text)
-        if d20 is not None or has_invalid_d20(text):
-            return "combat"
-        ready_pattern = r"\b(?:estamos pront[oa]s?|vamos lutar|puxa a alavanca|bora começar|começar treino)\b"
-        combat_pattern = r"\b(?:atac|golp|bater|lanç|lanc|tiro|atira|dispar|machad|magia|flech|acert|dano)\w*"
-        if re.search(ready_pattern, text, re.IGNORECASE) or re.search(combat_pattern, text, re.IGNORECASE):
-            return "combat"
-        tactical_pattern = r"\b(?:fraqueza|dica|conselho|como us|ponto fraco|poder|habilidade)\b"
-        if re.search(tactical_pattern, text, re.IGNORECASE):
-            return "tactical_advice"
+        logger.error(f"Falha ao classificar intenção via LLM ({e})")
         return "exploration"
 
 
@@ -168,9 +155,9 @@ def tactical_advice_node(state: GameState) -> dict:
         context_parts.append("Ação Livre (Conselho Tático): O recruta está pedindo orientação ou tirando dúvidas de combate.")
         if hero:
             context_parts.append(
-                f"Recruta ativo: {hero.name} ({hero.class_name}). Poder especial: '{hero.special_power}'."
+                f"Recruta ativo: {hero.name} ({hero.class_name}). Ataque principal: '{hero.attack_name}'. Poder especial: '{hero.special_power}'."
             )
-        if monster and not monster.is_defeated and monster.hp > 0:
+        if _is_combat_active(state) and monster and not monster.is_defeated and monster.hp > 0:
             abilities_str = ", ".join(monster.abilities) if monster.abilities else "nenhuma habilidade incomum"
             context_parts.append(
                 f"Fera na arena: {monster.name} (Jaula {monster.cage_number}, CA {monster.ac}, HP {monster.hp}/{monster.max_hp}). "
@@ -178,7 +165,7 @@ def tactical_advice_node(state: GameState) -> dict:
             )
             context_parts.append(
                 "Instrução para Loomis: Ofereça uma dica tática enérgica e prática explicando como aproveitar "
-                "o poder especial do recruta contra os pontos fracos da criatura, incentivando o próximo ataque."
+                "o ataque principal e o poder especial do recruta contra a criatura, incentivando o próximo golpe."
             )
         elif state.is_victory:
             context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
@@ -200,7 +187,7 @@ def exploration_node(state: GameState) -> dict:
     count = _exploration_counters.get(state.session_id, 0) + 1
     _exploration_counters[state.session_id] = count
 
-    if count >= 7:
+    if count >= 14:
         beast = _get_active_monster(state) or get_cage_monster(1)
         _combat_started[state.session_id] = True
         _exploration_counters[state.session_id] = 0
@@ -209,7 +196,7 @@ def exploration_node(state: GameState) -> dict:
             f"• A Jaula {beast.cage_number} foi aberta e <b>{beast.name}</b> entrou na arena [HP: {beast.hp}/{beast.max_hp} | CA: {beast.ac}]!",
             f"Gatilho Forçado de Combate: Loomis perdeu a paciência com o grupo após {count} mensagens de conversa, puxou a alavanca da Jaula 1 e mandou os recrutas assumirem formação!",
         ]
-    elif count >= 4:
+    elif count >= 9:
         context_parts = [
             "Ação Livre (Roleplay e Exploração na Clareira de Treino):",
             "Loomis impaciente: Responda brevemente ao que foi perguntado, mas corte a conversa mole e pressione com firmeza: "
@@ -219,7 +206,7 @@ def exploration_node(state: GameState) -> dict:
         context_parts = [
             "Ação Livre (Roleplay e Exploração na Clareira de Treino):",
             "Loomis acolhedor: Responda diretamente e com simpatia de veterano às perguntas sobre a vila de Hesiod, "
-            "as ferramentas, a cabana rústica e a poção revigorante de menta e limão no caldeirão. NUNCA termine repetindo frases feitas como 'quando estiverem prontos diga estamos prontos' (isso já foi explicado no início e só deve ser dito se o jogador perguntar expressamente como iniciar a prova).",
+            "as ferramentas, a cabana rústica e a poção de cura de menta e limão no caldeirão (que restaura a vida de quem cai inconsciente na luta). NUNCA termine repetindo frases feitas como 'quando estiverem prontos diga estamos prontos' (isso já foi explicado no início e só deve ser dito se o jogador perguntar expressamente como iniciar a prova).",
         ]
 
     if state.npcs:
@@ -390,6 +377,7 @@ async def combat_node(state: GameState) -> dict:
             else:
                 next_cage = max_cage + 1
                 next_beast = get_cage_monster(next_cage)
+                new_beast = next_beast
                 state.monsters.append(next_beast)
                 round_actions.append(f"• <b>{next_beast.name}</b> entrou na arena! [Monstro HP: {next_beast.hp}/{next_beast.max_hp}]")
 
@@ -579,7 +567,7 @@ async def npc_node(state: GameState) -> dict:
     is_exploration = "Roleplay e Exploração" in (state.last_context or "")
     if is_exploration and len(state.recent_messages) > 1:
         dialogue_history = "\n".join(
-            f"{m.sender}: {m.content}" for m in state.recent_messages[-6:-1]
+            f"{m.sender}: {m.content}" for m in state.recent_messages[-11:-1]
         )
         prompt_context = (
             f"Contexto do Treino e Ambiente:\n{state.last_context}\n\n"

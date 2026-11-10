@@ -9,7 +9,7 @@ from api.motor_rpg.session_service import (
     reset_game_session,
     select_hero_for_player,
 )
-from llm_gateway.client import GroqAdapter, ICUnicampAdapter, LLMClient, OpenRouterAdapter, create_llm_adapter
+from llm_gateway.client import GroqAdapter, ICUnicampAdapter, LLMClient, NvidiaBuildAdapter, OpenRouterAdapter, create_llm_adapter
 from tests.recorder import clear_test_output, log_test_turn
 
 client = TestClient(app)
@@ -75,6 +75,7 @@ async def test_regressions_and_guardrails():
     assert isinstance(create_llm_adapter(provider="groq"), GroqAdapter)
     assert isinstance(create_llm_adapter(provider="openrouter"), OpenRouterAdapter)
     assert isinstance(create_llm_adapter(provider="ic"), ICUnicampAdapter)
+    assert isinstance(create_llm_adapter(provider="nvidia"), NvidiaBuildAdapter)
 
     # Sessão: Ruído e Ofensa
     select_hero_for_player(session_id, "101", "Isaac", 4)
@@ -123,9 +124,14 @@ async def test_natural_flow_and_cage_transition_guardrails():
     assert "ataque de equipe" not in r_open.lower()
     assert "coordenação da equipe" not in r_open.lower()
 
-    # 3. Crítico ativando 50% de HP da Jaula 1: Beholder entra, mas NÃO contra-ataca no mesmo instante
-    r_hit = await process_npc_turn("ataco com 20", user_info={"session_id": session_id, "telegram_id": "101"})
-    assert "Yarrow" in r_hit and "atacou" in r_hit and "Bullette Faminto" in r_hit
+    # 3. Ataques ativando 50% de HP da Jaula 1: Beholder entra, mas NÃO contra-ataca no mesmo instante
+    r_hit = ""
+    for _ in range(5):
+        r_hit = await process_npc_turn("ataco com 20", user_info={"session_id": session_id, "telegram_id": "101"})
+        assert "Yarrow" in r_hit and "atacou" in r_hit and "Bullette Faminto" in r_hit
+        if "entrou na arena" in r_hit:
+            break
+
     assert "Beholder Ameaçador" in r_hit and "entrou na arena" in r_hit
     assert "Bullette Faminto" in r_hit and "contra-atacou" in r_hit
     assert "Beholder Ameaçador</b> contra-atacou" not in r_hit

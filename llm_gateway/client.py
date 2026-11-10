@@ -11,15 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-DEFAULT_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_IC_URL = "https://llm.ic.unicamp.br/api/chat/completions"
-DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
-
 DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "60"))
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "90"))
 
 _REASONING_MODEL_KEYWORDS = ("gpt-oss", "qwen", "deepseek", "r1", "qwq")
 
@@ -66,9 +60,23 @@ class GroqAdapter(BaseLLMAdapter):
         url: str | None = None,
         model: str | None = None,
     ) -> None:
-        resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY_GROQ"))
-        resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL_GROQ")) or DEFAULT_GROQ_URL
-        resolved_model = _clean_env(model) or _clean_env(os.getenv("LLM_MODEL_GROQ")) or DEFAULT_GROQ_MODEL
+        resolved_key = (
+            _clean_env(api_key)
+            or _clean_env(os.getenv("LLM_API_KEY_GROQ"))
+            or _clean_env(os.getenv("LLM_API_KEY"))
+        )
+        resolved_url = (
+            _clean_env(url)
+            or _clean_env(os.getenv("LLM_API_URL_GROQ"))
+            or _clean_env(os.getenv("LLM_API_URL"))
+            or ""
+        )
+        resolved_model = (
+            _clean_env(model)
+            or _clean_env(os.getenv("LLM_MODEL_GROQ"))
+            or _clean_env(os.getenv("LLM_MODEL"))
+            or ""
+        )
         super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
 
     def build_payload(
@@ -111,12 +119,14 @@ class OpenRouterAdapter(BaseLLMAdapter):
         resolved_url = (
             _clean_env(url)
             or _clean_env(os.getenv("LLM_API_URL_OPENROUTER"))
-            or DEFAULT_OPENROUTER_URL
+            or _clean_env(os.getenv("LLM_API_URL"))
+            or ""
         )
         resolved_model = (
             _clean_env(model)
             or _clean_env(os.getenv("LLM_MODEL_OPENROUTER"))
-            or DEFAULT_OPENROUTER_MODEL
+            or _clean_env(os.getenv("LLM_MODEL"))
+            or ""
         )
         super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
 
@@ -145,8 +155,8 @@ class ICUnicampAdapter(BaseLLMAdapter):
         url: str | None = None,
         model: str | None = None,
     ) -> None:
-        resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY"))
-        resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL")) or DEFAULT_IC_URL
+        resolved_key = _clean_env(api_key) or _clean_env(os.getenv("LLM_API_KEY_IC")) or _clean_env(os.getenv("LLM_API_KEY"))
+        resolved_url = _clean_env(url) or _clean_env(os.getenv("LLM_API_URL_IC")) or _clean_env(os.getenv("LLM_API_URL")) or ""
         resolved_model = (
             _clean_env(model)
             or _clean_env(os.getenv("LLM_MODEL_IC"))
@@ -171,6 +181,50 @@ class ICUnicampAdapter(BaseLLMAdapter):
         }
 
 
+class NvidiaBuildAdapter(BaseLLMAdapter):
+    """Adapter para a API do NVIDIA Build / NIM (OpenAI-compatible)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        resolved_key = (
+            _clean_env(api_key)
+            or _clean_env(os.getenv("LLM_API_KEY_NVIDIA"))
+            or _clean_env(os.getenv("LLM_API_KEY"))
+        )
+        resolved_url = (
+            _clean_env(url)
+            or _clean_env(os.getenv("LLM_API_URL_NVIDIA"))
+            or _clean_env(os.getenv("LLM_API_URL"))
+            or ""
+        )
+        resolved_model = (
+            _clean_env(model)
+            or _clean_env(os.getenv("LLM_MODEL_NVIDIA"))
+            or _clean_env(os.getenv("LLM_MODEL"))
+            or ""
+        )
+        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
+
+    def build_payload(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "model": (model or self.model).strip(),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+
 def create_llm_adapter(
     provider: str | None = None,
     api_key: str | None = None,
@@ -186,7 +240,11 @@ def create_llm_adapter(
             return ICUnicampAdapter(api_key=api_key, url=url, model=model)
         if "groq.com" in url:
             return GroqAdapter(api_key=api_key, url=url, model=model)
+        if "nvidia.com" in url:
+            return NvidiaBuildAdapter(api_key=api_key, url=url, model=model)
 
+    if selected in {"nvidia", "nvdia", "nvidia_build", "nim"}:
+        return NvidiaBuildAdapter(api_key=api_key, url=url, model=model)
     if selected == "openrouter":
         return OpenRouterAdapter(api_key=api_key, url=url, model=model)
     if selected in {"ic", "unicamp", "ollama"}:
