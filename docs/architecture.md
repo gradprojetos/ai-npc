@@ -342,3 +342,4 @@ classDiagram
 * **`OpenRouterAdapter`:** Fallback para modelos livres (como Nemotron).
 * **`ICUnicampAdapter`:** Conector para infraestrutura acadêmica local da Unicamp.
 * **Seleção Transparente:** Controlada via `LLM_PROVIDER=groq|openrouter|ic` no `.env`.
+
