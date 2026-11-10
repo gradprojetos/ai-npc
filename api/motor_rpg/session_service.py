@@ -103,7 +103,8 @@ def select_hero_for_player(
 
     msg = (
         f"<b>{player_name}</b> alistou <b>#{card_num} {hero.name}</b> "
-        f"({hero.class_name} | HP {hero.hp}/{hero.max_hp} | CA {hero.ac} | +{hero.attack_bonus} {hero.attack_name} | <i>{hero.special_power}</i>).\n"
+        f"({hero.class_name} | HP {hero.hp}/{hero.max_hp} | CA {hero.ac} | +{hero.attack_bonus}) - "
+        f"{hero.attack_name} | <i>{hero.special_power}</i>.\n"
         f"Quando todos escolherem, usem <code>/done</code> para iniciar!"
     )
     return True, msg, state

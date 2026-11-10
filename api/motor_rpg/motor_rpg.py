@@ -22,7 +22,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "max_hp": 5,
         "attack_bonus": 4,
         "attack_name": "Espada Larga",
-        "special_power": "Investida (+2 no ataque ao começar longe do monstro)",
+        "special_power": "Investida",
     },
     "raen": {
         "name": "Raen",
@@ -32,7 +32,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "max_hp": 7,
         "attack_bonus": 5,
         "attack_name": "Machado Pesado",
-        "special_power": "Guerreira Feroz (Empurra o monstro 2 casas ao ser atingida)",
+        "special_power": "Guerreira Feroz",
     },
     "bet": {
         "name": "Bet",
@@ -42,7 +42,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "max_hp": 4,
         "attack_bonus": 7,
         "attack_name": "Bola de Fogo",
-        "special_power": "Onda Explosiva (Dano em área atingindo criaturas adjacentes)",
+        "special_power": "Onda Explosiva",
     },
     "evindol": {
         "name": "Evindol",
@@ -52,7 +52,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "max_hp": 3,
         "attack_bonus": 6,
         "attack_name": "Lâminas Giratórias",
-        "special_power": "Ataque Furtivo (Causa dano dobrado - 2 - se flanquear)",
+        "special_power": "Ataque Furtivo",
     },
     "yarrow": {
         "name": "Yarrow",
@@ -62,7 +62,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
         "max_hp": 6,
         "attack_bonus": 3,
         "attack_name": "Espíritos Vingativos",
-        "special_power": "Grilhões Espectrais (Prende o monstro ao solo se errar o ataque)",
+        "special_power": "Grilhões Espectrais",
     },
 }
 

@@ -21,7 +21,8 @@ def _build_hero_catalog_lines() -> str:
         h = HERO_ARCHETYPES[key]
         lines.append(
             f"• <code>/select {num}</code> — <b>{h['name']}</b> "
-            f"({h['class_name']} | HP {h['hp']} | CA {h['ac']} | +{h['attack_bonus']} {h['attack_name']} | <i>{h['special_power']}</i>)"
+            f"({h['class_name']} | HP {h['hp']} | CA {h['ac']} | +{h['attack_bonus']}) - "
+            f"{h['attack_name']} | <i>{h['special_power']}</i>"
         )
     return "\n".join(lines)
 
