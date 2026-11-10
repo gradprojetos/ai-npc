@@ -101,8 +101,26 @@ def resolve_skill_check(hero: HeroState, skill: str, dc: int, d20: int) -> dict[
 
 ---
 
-## 5. Resumo das Vantagens Arquiteturais
+## 5. Diretriz de Design: Conversational-First e Teatro da Mente
 
-1. **Sem Redundância:** Não duplica nem descarta o `exploration_node` (conversa pura continua fluindo normalmente).
-2. **Coerência com o Domínio:** Trata ataques e perícias como especializações de uma mesma coisa: resoluções determinísticas de d20.
-3. **Preservação de Papéis:** O DM continua sendo o juiz matemático e Loomis o NPC carismático reagindo aos sucessos e fracassos dos alunos.
+Na evolução de sistemas de RPG conversacional com agentes inteligentes, a definição da **interface e dinâmica da conversa deve preceder e orientar a modelagem das regras mecânicas**:
+
+### 5.1. Adequação de Mídia: Grid de Tabuleiro vs. Chat Textual
+* O material de referência original (*The Heroes of Hesiod*) foi concebido para mesa de RPG física, baseando-se em grid quadriculado e posicionamento relativo de miniaturas.
+* Na transposição para um canal assíncrono e conversacional (Telegram), regras focadas em coordenadas ou métricas de distância física (como empurrão de casas ou flanqueamento geométrico) geram ruído para o usuário final e exigem inferências espaciais frágeis dos modelos de linguagem.
+* **Paradigma do Teatro da Mente (*Theater of the Mind*):** A experiência em chat privilegia ritmo, impacto descritivo e fluidez narrativa, substituindo a contagem de casas pela clareza de intenção das ações dos heróis.
+
+### 5.2. Metodologia Conversational-First
+* Em agentes LLM, **o fluxo de mensagens do usuário deve ser o ponto de partida do design**, derivando a complexidade do grafo e do modelo de dados apenas a partir de interações testadas e validadas:
+  1. **Validação Prévia do Diálogo:** Prototipar interações completas de ponta a ponta para identificar o que o jogador realmente precisa ver e digitar.
+  2. **Carga Cognitiva Reduzida:** Fichas de heróis e notificações do sistema devem priorizar síntese e legibilidade no mensageiro.
+  3. **Mecânica a Serviço da Conversa:** Novas regras mecânicas (como o subsistema de perícias e testes livres de cenário) devem ser integradas de forma transparente, sem fragmentar o fluxo natural de bate-papo.
+
+---
+
+## 6. Resumo das Vantagens Arquiteturais
+
+1. **Design Conversacional Enxuto:** Interface limpa no Telegram, cartas objetivas e foco no roleplay em primeira pessoa do NPC Loomis.
+2. **Sem Redundância no Grafo:** Não duplica nem descarta o `exploration_node` (conversa pura continua fluindo livremente).
+3. **Coerência com o Domínio:** Trata ataques e perícias como especializações de uma mesma coisa: resoluções determinísticas de d20.
+4. **Preservação de Papéis:** O DM continua sendo o juiz matemático e Loomis o NPC carismático reagindo aos sucessos e fracassos dos alunos.
