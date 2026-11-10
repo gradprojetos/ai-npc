@@ -100,3 +100,33 @@ async def test_regressions_and_guardrails():
     assert "atacou" in r_single
     log_test_turn(log_file, "d20 1 Dígito (7)", "Isaac", "7", r_single)
     reset_game_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_natural_flow_and_cage_transition_guardrails():
+    """Valida ausência de repetição na exploração, abertura de jaula sem alucinação e transição de fera justa."""
+    session_id = "test_natural_flow"
+    reset_game_session(session_id)
+
+    select_hero_for_player(session_id, "101", "Isaac", 4)
+    finish_recruiting_for_session(session_id)
+
+    # 1. Exploração: Não repete bordão de prontidão
+    r_lore = await process_npc_turn("quem prendeu os monstros?", user_info={"session_id": session_id, "telegram_id": "101"})
+    assert "Loomis:" in r_lore
+    assert "estamos prontos" not in r_lore.lower()
+
+    # 2. Abertura da Jaula: Loomis incentiva primeiro golpe sem alucinar ataque de equipe
+    r_open = await process_npc_turn("ok, estamos prontos", user_info={"session_id": session_id, "telegram_id": "101"})
+    assert "Jaula 1 foi aberta" in r_open
+    assert "declare sua ação" in r_open
+    assert "ataque de equipe" not in r_open.lower()
+    assert "coordenação da equipe" not in r_open.lower()
+
+    # 3. Crítico ativando 50% de HP da Jaula 1: Beholder entra, mas NÃO contra-ataca no mesmo instante
+    r_hit = await process_npc_turn("ataco com 20", user_info={"session_id": session_id, "telegram_id": "101"})
+    assert "Yarrow atacou Bullette Faminto" in r_hit
+    assert "Beholder Ameaçador entrou na arena!" in r_hit
+    assert "Bullette Faminto contra-atacou" in r_hit
+    assert "Beholder Ameaçador contra-atacou" not in r_hit
+    reset_game_session(session_id)

@@ -218,8 +218,8 @@ def exploration_node(state: GameState) -> dict:
     else:
         context_parts = [
             "Ação Livre (Roleplay e Exploração na Clareira de Treino):",
-            "Loomis acolhedor: Responda com simpatia e experiência de veterano às perguntas sobre a vila de Hesiod, "
-            "as ferramentas, a cabana rústica e o caldeirão de poção revigorante de menta e limão. Lembre-os amigavelmente de avisar quando estiverem prontos.",
+            "Loomis acolhedor: Responda diretamente e com simpatia de veterano às perguntas sobre a vila de Hesiod, "
+            "as ferramentas, a cabana rústica e a poção revigorante de menta e limão no caldeirão. NUNCA termine repetindo frases feitas como 'quando estiverem prontos diga estamos prontos' (isso já foi explicado no início e só deve ser dito se o jogador perguntar expressamente como iniciar a prova).",
         ]
 
     if state.npcs:
@@ -423,10 +423,12 @@ async def combat_node(state: GameState) -> dict:
 
     if not state.is_victory:
         alive_beasts = [m for m in state.monsters if not m.is_defeated and m.hp > 0]
+        # Se uma fera acabou de entrar na arena nesta rodada (gatilho surpresa de 50% de HP), ela ruge e se posiciona, agindo apenas a partir da rodada seguinte
+        beasts_to_attack = [m for m in alive_beasts if new_beast is None or m.name != new_beast.name]
         active_conscious = [h for h in state.players if not h.is_unconscious]
         last_target_id = _last_monster_targets.get(state.session_id)
 
-        for beast in alive_beasts:
+        for beast in beasts_to_attack:
             if not active_conscious:
                 break
             candidates = [h for h in active_conscious if h.player_id != last_target_id] if len(active_conscious) > 1 else active_conscious
@@ -448,7 +450,6 @@ async def combat_node(state: GameState) -> dict:
                 f"• <b>{beast.name}</b> contra-atacou <b>{target_hero.name}</b> com {beast.attack_name} e {m_text}"
             )
             if target_hero.is_unconscious:
-                dm_lines.append(f"• <b>{target_hero.name}</b> caiu inconsciente!")
                 active_conscious.remove(target_hero)
 
         # Regra de Hesiod: se todo o grupo tombar, Loomis arremessa a poção e reanima os heróis para o treino continuar
@@ -457,9 +458,15 @@ async def combat_node(state: GameState) -> dict:
             for h in state.players:
                 h.restore_full_hp()
                 healed_names.append(h.name)
-            dm_lines.append(
-                f"• Loomis interveio arremessando sua poção de menta e limão, reanimando {', '.join(healed_names)} para continuar a luta!"
-            )
+            names_str = ", ".join(healed_names)
+            if len(healed_names) == 1:
+                dm_lines.append(f"• <b>{names_str}</b> caiu inconsciente e Loomis o reanimou!")
+            else:
+                dm_lines.append(f"• <b>{names_str}</b> caíram inconscientes e Loomis os reanimou!")
+        else:
+            for h in state.players:
+                if h.is_unconscious:
+                    dm_lines.append(f"• <b>{h.name}</b> caiu inconsciente!")
 
     state.last_context = "\n".join(dm_lines)
 
@@ -557,6 +564,18 @@ async def npc_node(state: GameState) -> dict:
         if last_user_msg and last_user_msg.sender and not last_user_msg.sender.isdigit() and last_user_msg.sender != "Jogador":
             hero_name = last_user_msg.sender
 
+    is_solo = len(state.players) <= 1
+    if state.is_victory:
+        defeated_tag = (
+            f"\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 4 jaulas foram vencidas! Parabenize {hero_name} com entusiasmo como o novo Herói de Hesiod!]"
+            if is_solo
+            else "\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 4 jaulas foram vencidas! Parabenize toda a equipe como os novos Heróis de Hesiod!]"
+        )
+    elif monster_fell:
+        defeated_tag = "\n[MONSTRO DERROTADO]"
+    else:
+        defeated_tag = ""
+
     is_exploration = "Roleplay e Exploração" in (state.last_context or "")
     if is_exploration and len(state.recent_messages) > 1:
         dialogue_history = "\n".join(
@@ -569,7 +588,21 @@ async def npc_node(state: GameState) -> dict:
         )
     elif state.last_context and "Dungeon Master:" in state.last_context:
         structured_combat = _format_combat_context_for_llm(state.last_context)
-        prompt_context = f"{structured_combat}{defeated_tag}"
+        is_cage_opening = "declare sua ação e o valor" in state.last_context
+        mode_instruction = (
+            f"[MODO SOLO: O recruta {hero_name} está lutando sozinho na arena. Dirija-se exclusivamente a ele, sem citar 'equipe', 'recrutas' no plural ou 'coordenação do grupo'.]"
+            if is_solo
+            else f"[MODO COOPERATIVO: O grupo possui {len(state.players)} heróis.]"
+        )
+        if is_cage_opening:
+            opening_tag = (
+                f"\n[ABERTURA DA JAULA: A fera acabou de entrar na arena e NENHUM golpe foi desferido ainda! "
+                f"Ordene energicamente que {hero_name} avance, empunhe sua arma e prepare o primeiro golpe! "
+                f"NÃO elogie ataques inexistentes nem alerte sobre contra-ataques!]"
+            )
+            prompt_context = f"{structured_combat}\n\n{mode_instruction}{opening_tag}"
+        else:
+            prompt_context = f"{structured_combat}\n\n{mode_instruction}{defeated_tag}"
     elif state.last_context:
         prompt_context = (
             f"Contexto do Treino e Regras:\n{state.last_context}{defeated_tag}\n\n"

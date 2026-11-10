@@ -73,37 +73,27 @@ Sequência estruturada em **6 Fases (Fundação $\rightarrow$ Persistência $\ri
 - [x] **6.1.** Rodar `pytest tests/test_e2e_coop_game.py` garantindo 100% de aprovação.
 - [x] **6.2.** Invocar subagente de auditoria (`research`) sobre a base modificada para confirmar ausência de regressões ou *AI slop*.
 
----
-
-## 2. Backlog Opcional — Refatoração Estrutural Pesada (Seção B)
-
-Mudanças profundas de modelagem de banco, ORM e arquitetura (maior risco de regressão; exigem alterar schema/migrations e testes):
-
-### Lote 1: Espelhamento 1:1 (`GameState` ↔ PostgreSQL) e Remoção de Estado Global em RAM
-* **Fix 1.1 — Eliminar os 4 dicionários globais voláteis de [`turn_graph.py` (L14-L17)](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L14-L17):**
-  * Mover `_round_buffers`, `_acted_heroes`, `_exploration_counters` e `_last_monster_targets` (além de `is_recruiting` deduzido em [`session_service.py` L248](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L248)) para colunas explícitas na tabela `sessions` ([`db/models.py`](file:///home/isaac/Documents/mc030/ai-npc/db/models.py), [`0001_initial.py`](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py)) e no [`GameState`](file:///home/isaac/Documents/mc030/ai-npc/api/schemas/rpg.py), atualizando [`test_e2e_coop_game.py` (L6)](file:///home/isaac/Documents/mc030/ai-npc/tests/test_e2e_coop_game.py#L6).
-* **Fix 1.2 — Eliminar N+1 Queries em [`session_service.py` (L187-L234 e L304-L355)](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L187-L234):**
-  * Usar `selectinload(Session.heroes, Session.monsters)` e `ConfigDict(from_attributes=True)` / `model_validate()`.
-* **Fix 1.3 — Remover modelo `NPC` ([`db/models.py` L149-L160](file:///home/isaac/Documents/mc030/ai-npc/db/models.py#L149-L160)) e tabela `npcs` ([`0001_initial.py` L121-L150](file:///home/isaac/Documents/mc030/ai-npc/db/migrations/0001_initial.py#L121-L150)).**
-
-### Lote 2: Desacoplamento de Substrings HTML e Separação Grafo ↔ Motor RPG
-* **Fix 2.1 — Eliminar acoplamento por substring em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py):**
-  * Substituir checagens de texto em `state.last_context` ([L419-L423](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L419-L423), [L443](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L443), [L447](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L447), [L474](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L474), [L486](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L486)) por flags/estado explícito.
-* **Fix 2.2 — Devolver regras de combate para [`motor_rpg.py`](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/motor_rpg.py) e evitar *soft-lock* de party wipe.**
-* **Fix 2.3 — Remover injeção de `"jorick"` fantasma ([`turn_graph.py` L186-L187](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L186-L187)) e `dummy_ids` ([`session_service.py` L88-L96](file:///home/isaac/Documents/mc030/ai-npc/api/motor_rpg/session_service.py#L88-L96)).**
-* **Fix 2.4 — Extrair helper `_safe_reply` em [`telegram_service.py` (L343-L355)](file:///home/isaac/Documents/mc030/ai-npc/telegram_bot/telegram_service.py#L343-L355).**
+### Fase 7: Ajuste Fino de Imersão e Combate Justo (Descobertas do Teste Manual)
+- [x] **7.1. Fala de Abertura da Jaula no Loomis:** Diferenciar abertura da jaula vs fechamento de rodada em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py) e [`prompts.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py), impedindo que Loomis elogie ataques inexistentes ou alerte sobre contra-ataques antes do primeiro d20.
+- [x] **7.2. Entrada Justa de Fera aos 50% de HP:** Ao ativar a jaula seguinte com o monstro atual em $\le 50\%$ HP, a nova fera entra na arena mas só contra-ataca a partir da rodada seguinte, evitando ataque duplo instantâneo sobre o jogador no mesmo turno.
+- [x] **7.3. Adaptação Dinâmica Solo vs Grupo:** Instruir o prompt do Loomis a tratar jogo solo diretamente pelo nome do herói sem alucinar "equipe" ou "coordenação de grupo".
+- [x] **7.4. Fim do Papagaio na Exploração:** Remover a instrução repetitiva de call-to-action de prontidão no [`exploration_node`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py) e [`EXPLORATION_PROMPT`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/prompts.py).
+- [x] **7.5. Unificação do Bullet de Inconsciência:** Fusão da queda do herói e intervenção com poção em um único bullet direto (`• [Hero] caiu inconsciente e Loomis o reanimou!`) em [`turn_graph.py`](file:///home/isaac/Documents/mc030/ai-npc/api/ai_core/turn_graph.py#L457-L469).
 
 ---
 
-## 3. Evoluções Futuras (Gateway Multi-Provedor & Documentação)
+## 2. Gateway Multi-Provedor LLM (Strategy + Adapter Pattern)
 
-### 3.1. Gateway Multi-Provedor LLM (Strategy + Adapter Pattern em [`llm_gateway/`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py))
-- [ ] Criar interface `LLMProvider` em `llm_gateway/providers/base.py`.
-- [ ] Implementar `OpenRouterProvider`, `ICUnicampProvider` e `NvidiaBuildProvider`.
-- [ ] Implementar `LLMProviderFactory` em `llm_gateway/factory.py` via `LLM_PROVIDER` no `.env`.
+- [x] Interface `BaseLLMAdapter` e factory `create_llm_adapter` implementadas em [`llm_gateway/client.py`](file:///home/isaac/Documents/mc030/ai-npc/llm_gateway/client.py).
+- [x] Suporte unificado a `GroqAdapter` (padrão com suporte a modelos de raciocínio), `OpenRouterAdapter` e `ICUnicampAdapter`.
+- [x] Seleção dinâmica via variável de ambiente `LLM_PROVIDER` no `.env`.
 
-### 3.2. Atualização da Documentação de Arquitetura ([`docs/architecture.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/architecture.md))
-- [ ] **Seção 5 (LangGraph):** Atualizar diagrama com as 3 rotas (`exploration_node`, `tactical_advice_node`, `combat_node`), prompts modulares e `is_mid_round_turn`.
-- [ ] **Seção 3 (Persistência):** Refletir o PostgreSQL como *Single Source of Truth* (sem `SessionManager` em memória).
-- [ ] **Seção 4.2 (Dinâmica de Rodada):** Alinhar com rodada fechada por iniciativa e prólogo de exploração pós-`/done`.
-- [ ] **Seções 1 e 3 (Langfuse):** Sinalizar Langfuse como integração planejada/futura.
+---
+
+## 3. Documentação de Arquitetura ([`docs/architecture.md`](file:///home/isaac/Documents/mc030/ai-npc/docs/architecture.md))
+
+- [x] **Seção 5 (LangGraph):** Atualizado diagrama de estados com as 3 rotas (`exploration_node`, `tactical_advice_node`, `combat_node`), prompts modulares e retorno direto de feedback mecânico (`is_mid_round_turn`).
+- [x] **Seção 3 (Persistência):** Atualizado sequence diagram refletindo o PostgreSQL como *Single Source of Truth* (eliminada a menção a `SessionManager` em memória).
+- [x] **Seção 4.2 (Dinâmica de Rodada):** Alinhada descrição com rodada fechada por iniciativa, combate justo (entrada de fera aos 50% sem ataque duplo) e prólogo pós-`/done`.
+- [x] **Seções 1 e 3 (Langfuse):** Sinalizado Langfuse como integração planejada/futura.
+- [x] **Seção 6 (LLM Gateway):** Adicionado diagrama de classes do Adapter Pattern (`BaseLLMAdapter`, `GroqAdapter`, `OpenRouterAdapter`, `ICUnicampAdapter`).
