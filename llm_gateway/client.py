@@ -15,8 +15,6 @@ DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "90"))
 
-_REASONING_MODEL_KEYWORDS = ("gpt-oss", "qwen", "deepseek", "r1", "qwq")
-
 
 def _clean_env(value: str | None) -> str | None:
     if value is None:
@@ -49,101 +47,6 @@ class BaseLLMAdapter(ABC):
         model: str | None = None,
     ) -> dict[str, Any]:
         """Monta o payload específico aceito pelo provedor."""
-
-
-class GroqAdapter(BaseLLMAdapter):
-    """Adapter para a API da Groq (OpenAI-compatible estrito, com suporte a modelos de raciocínio)."""
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        url: str | None = None,
-        model: str | None = None,
-    ) -> None:
-        resolved_key = (
-            _clean_env(api_key)
-            or _clean_env(os.getenv("LLM_API_KEY_GROQ"))
-            or _clean_env(os.getenv("LLM_API_KEY"))
-        )
-        resolved_url = (
-            _clean_env(url)
-            or _clean_env(os.getenv("LLM_API_URL_GROQ"))
-            or _clean_env(os.getenv("LLM_API_URL"))
-            or ""
-        )
-        resolved_model = (
-            _clean_env(model)
-            or _clean_env(os.getenv("LLM_MODEL_GROQ"))
-            or _clean_env(os.getenv("LLM_MODEL"))
-            or ""
-        )
-        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
-
-    def build_payload(
-        self,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-        model: str | None = None,
-    ) -> dict[str, Any]:
-        target_model = (model or self.model).strip()
-        is_reasoning = any(k in target_model.lower() for k in _REASONING_MODEL_KEYWORDS)
-        effective_max_tokens = max_tokens + 250 if is_reasoning else max_tokens
-
-        payload: dict[str, Any] = {
-            "model": target_model,
-            "temperature": temperature,
-            "max_tokens": effective_max_tokens,
-            "messages": messages,
-        }
-        if is_reasoning:
-            payload["reasoning_effort"] = "low"
-            payload["include_reasoning"] = False
-        return payload
-
-
-class OpenRouterAdapter(BaseLLMAdapter):
-    """Adapter para OpenRouter (desativa reasoning tokens para preservar limite de saída)."""
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        url: str | None = None,
-        model: str | None = None,
-    ) -> None:
-        resolved_key = (
-            _clean_env(api_key)
-            or _clean_env(os.getenv("LLM_API_KEY_OPENROUTER"))
-            or _clean_env(os.getenv("LLM_API_KEY"))
-        )
-        resolved_url = (
-            _clean_env(url)
-            or _clean_env(os.getenv("LLM_API_URL_OPENROUTER"))
-            or _clean_env(os.getenv("LLM_API_URL"))
-            or ""
-        )
-        resolved_model = (
-            _clean_env(model)
-            or _clean_env(os.getenv("LLM_MODEL_OPENROUTER"))
-            or _clean_env(os.getenv("LLM_MODEL"))
-            or ""
-        )
-        super().__init__(api_key=resolved_key, url=resolved_url, model=resolved_model)
-
-    def build_payload(
-        self,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-        model: str | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "model": (model or self.model).strip(),
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "reasoning": {"effort": "none"},
-            "messages": messages,
-        }
 
 
 class ICUnicampAdapter(BaseLLMAdapter):
@@ -231,29 +134,21 @@ def create_llm_adapter(
     url: str | None = None,
     model: str | None = None,
 ) -> BaseLLMAdapter:
-    """Seleciona o Adapter de acordo com o provider ou variável LLM_PROVIDER (default: 'groq')."""
-    selected = (provider or os.getenv("LLM_PROVIDER") or "groq").strip().lower()
+    """Seleciona o Adapter de acordo com o provider ou variável LLM_PROVIDER (suporte: 'nvidia' ou 'ic')."""
+    selected = (provider or os.getenv("LLM_PROVIDER") or "nvidia").strip().lower()
     if url:
-        if "openrouter.ai" in url:
-            return OpenRouterAdapter(api_key=api_key, url=url, model=model)
         if "unicamp.br" in url:
             return ICUnicampAdapter(api_key=api_key, url=url, model=model)
-        if "groq.com" in url:
-            return GroqAdapter(api_key=api_key, url=url, model=model)
         if "nvidia.com" in url:
             return NvidiaBuildAdapter(api_key=api_key, url=url, model=model)
 
-    if selected in {"nvidia", "nvdia", "nvidia_build", "nim"}:
-        return NvidiaBuildAdapter(api_key=api_key, url=url, model=model)
-    if selected == "openrouter":
-        return OpenRouterAdapter(api_key=api_key, url=url, model=model)
     if selected in {"ic", "unicamp", "ollama"}:
         return ICUnicampAdapter(api_key=api_key, url=url, model=model)
-    return GroqAdapter(api_key=api_key, url=url, model=model)
+    return NvidiaBuildAdapter(api_key=api_key, url=url, model=model)
 
 
 class LLMClient:
-    """Cliente Python assíncrono para comunicação com a API do LLM (default: GroqAdapter)."""
+    """Cliente Python assíncrono para comunicação com a API do LLM (default: NvidiaBuildAdapter)."""
 
     def __init__(
         self,

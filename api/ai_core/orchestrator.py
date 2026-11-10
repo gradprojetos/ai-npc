@@ -11,11 +11,6 @@ from api.schemas.rpg import GameState, Message
 
 logger = logging.getLogger(__name__)
 
-_PROFANITY_PATTERN = re.compile(
-    r"\b(vai se ferrar|vai se foder|foda-se|fodase|vtnc|fdp|idiota|idiotas|imbecil|imbecis|arrombado|merda|porra|caralho)\b",
-    flags=re.IGNORECASE,
-)
-
 
 def is_noise_input(text: str | None) -> bool:
     """Identifica entradas vazias ou pontuação isolada, preservando rolagens numéricas de 1–2 dígitos."""
@@ -43,9 +38,6 @@ async def process_npc_turn(user_message: str, user_info: dict | None = None) -> 
             f"Recrutas alistados até agora: <b>{', '.join(p.name for p in state.players)}</b>.\n"
             f"Quando todos tiverem escolhido, digitem <code>/done</code> para Loomis abrir a Jaula 1 e iniciar a luta!"
         )
-
-    if _PROFANITY_PATTERN.search(user_message or ""):
-        return '<b>Loomis:</b>\n"Olha a boca na minha arena, recruta! Mantenha a disciplina e foque no treinamento!"'
 
     if is_noise_input(user_message):
         return '<b>Loomis:</b>\n"Fale com clareza, recruta! Diga o que pretende fazer na arena!"'

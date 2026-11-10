@@ -9,7 +9,7 @@ from api.motor_rpg.session_service import (
     reset_game_session,
     select_hero_for_player,
 )
-from llm_gateway.client import GroqAdapter, ICUnicampAdapter, LLMClient, NvidiaBuildAdapter, OpenRouterAdapter, create_llm_adapter
+from llm_gateway.client import ICUnicampAdapter, LLMClient, NvidiaBuildAdapter, create_llm_adapter
 from tests.recorder import clear_test_output, log_test_turn
 
 client = TestClient(app)
@@ -71,23 +71,17 @@ async def test_regressions_and_guardrails():
     assert is_noise_input("7") is False
     assert is_noise_input("ok") is False
 
-    # Adapters LLM
-    assert isinstance(create_llm_adapter(provider="groq"), GroqAdapter)
-    assert isinstance(create_llm_adapter(provider="openrouter"), OpenRouterAdapter)
+    # Adapters LLM (suporte exclusivo: IC-Unicamp e NVIDIA Build)
     assert isinstance(create_llm_adapter(provider="ic"), ICUnicampAdapter)
     assert isinstance(create_llm_adapter(provider="nvidia"), NvidiaBuildAdapter)
 
-    # Sessão: Ruído e Ofensa
+    # Sessão: Ruído e d20
     select_hero_for_player(session_id, "101", "Isaac", 4)
     finish_recruiting_for_session(session_id)
 
     r_noise = await process_npc_turn(".", user_info={"session_id": session_id, "telegram_id": "101"})
     assert "Fale com clareza" in r_noise
     log_test_turn(log_file, "Ruído", "Isaac", ".", r_noise)
-
-    r_prof = await process_npc_turn("vai se ferrar", user_info={"session_id": session_id, "telegram_id": "101"})
-    assert "Olha a boca na minha arena" in r_prof
-    log_test_turn(log_file, "Ofensa", "Isaac", "vai se ferrar", r_prof)
 
     # d20 inválido não abre jaula
     r_inv1 = await process_npc_turn("ataco com 50", user_info={"session_id": session_id, "telegram_id": "101"})
@@ -127,7 +121,7 @@ async def test_natural_flow_and_cage_transition_guardrails():
     # 3. Ataques ativando 50% de HP da Jaula 1: Beholder entra, mas NÃO contra-ataca no mesmo instante
     r_hit = ""
     for _ in range(5):
-        r_hit = await process_npc_turn("ataco com 20", user_info={"session_id": session_id, "telegram_id": "101"})
+        r_hit = await process_npc_turn("ataco com 15", user_info={"session_id": session_id, "telegram_id": "101"})
         assert "Yarrow" in r_hit and "atacou" in r_hit and "Bullette Faminto" in r_hit
         if "entrou na arena" in r_hit:
             break
