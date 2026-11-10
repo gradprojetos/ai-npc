@@ -11,7 +11,7 @@ from api.motor_rpg.session_service import (
     create_initial_rpg_state,
     get_or_create_session_state,
     persist_session_state_to_db,
-    reset_player_session,
+    reset_game_session,
 )
 
 __all__ = [
@@ -25,5 +25,5 @@ __all__ = [
     "create_initial_rpg_state",
     "get_or_create_session_state",
     "persist_session_state_to_db",
-    "reset_player_session",
+    "reset_game_session",
 ]
