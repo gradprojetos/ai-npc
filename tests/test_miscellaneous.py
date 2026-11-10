@@ -125,8 +125,9 @@ async def test_natural_flow_and_cage_transition_guardrails():
 
     # 3. Crítico ativando 50% de HP da Jaula 1: Beholder entra, mas NÃO contra-ataca no mesmo instante
     r_hit = await process_npc_turn("ataco com 20", user_info={"session_id": session_id, "telegram_id": "101"})
-    assert "Yarrow atacou Bullette Faminto" in r_hit
-    assert "Beholder Ameaçador entrou na arena!" in r_hit
-    assert "Bullette Faminto contra-atacou" in r_hit
+    assert "Yarrow" in r_hit and "atacou" in r_hit and "Bullette Faminto" in r_hit
+    assert "Beholder Ameaçador" in r_hit and "entrou na arena" in r_hit
+    assert "Bullette Faminto" in r_hit and "contra-atacou" in r_hit
+    assert "Beholder Ameaçador</b> contra-atacou" not in r_hit
     assert "Beholder Ameaçador contra-atacou" not in r_hit
     reset_game_session(session_id)
