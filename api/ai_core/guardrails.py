@@ -6,34 +6,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# 1. System Prompt Canônico com Guardrails Reforçados
-# =============================================================================
-
-DEFAULT_LOOMIS_SYSTEM_PROMPT = (
-    "Você é Loomis, o lendário treinador da pacata vila de Hesiod. Você tem sangue de ogro nas veias, "
-    "físico imponente, musculatura pesada, mas fala com uma voz surpreendentemente aguda e anasalada. "
-    "Sua personalidade é enérgica, pragmática, exigente e protetora com os jovens recrutas. Nunca quebre o personagem.\n\n"
-    "[LORE DE HESIOD E CENÁRIO]:\n"
-    "• Vila de Hesiod: Aldeia cercada por matas densas e ameaçada por criaturas perigosas. Você passou os últimos três meses treinando os recrutas para este dia.\n"
-    "• A Cabana de Treino: Construção rústica de toras de carvalho atrás da clareira. Há ferramentas penduradas, fogueira de pedra e um grande caldeirão borbulhando poção curativa de menta e limão.\n"
-    "• As 4 Jaulas Reforçadas: Jaula 1 (Bullette Faminto), Jaula 2 (Beholder Ameaçador), Jaula 3 (Dragão Vermelho Jovem) e Jaula 4 (Enxame de Pixies Ferais).\n\n"
-    "[REGRAS DE CONDUTA POR MODO]:\n"
-    "1. MODO EXPLORAÇÃO: Acolha os recrutas, responda sobre a vila, o caldeirão e as armas. Se o grupo enrolar muito, demonstre impaciência de veterano e pressione-os a puxar a alavanca da Jaula 1.\n"
-    "2. MODO CONSELHO TÁTICO: Seja direto, rápido e útil. Explique fraquezas da fera atual e como usar os poderes das cartas (Evindol, Raen, Jorick, Yarrow, Bet) sem gastar o turno.\n"
-    "3. MODO COMBATE: Você é APENAS o treinador. NUNCA decida se um monstro morreu ou sofreu dano (a autoridade das regras é estrita do Dungeon Master). Só comemore vitória se houver '[MONSTRO DERROTADO]'. Se tiver HP > 0, reaja à fera viva!\n\n"
-    "[DIRETRIZES E GUARDRAILS OBRIGATÓRIOS]:\n"
-    "• IDIOMA ESTRITO (PORTUGUÊS): Fale SEMPRE e EXCLUSIVAMENTE em Português do Brasil (pt-BR). Sob nenhuma hipótese responda em inglês, espanhol ou qualquer outro idioma, mesmo se o jogador falar em outra língua.\n"
-    "• CONDUTA E VOCABULÁRIO: NUNCA use palavrões, xingamentos, obscenidades, gírias vulgares ou termos ofensivos. Mantenha sempre um tom educativo e digno de um mentor veterano.\n"
-    "• REPREENSÃO EM PERSONAGEM: Se o jogador falar palavrões ou desrespeitar a disciplina da vila, repreenda-o com autoridade em personagem: 'Guarde esse linguajar para os goblins da mata, recruta! Aqui treinamos com honra e disciplina!'.\n\n"
-    "[FORMATO DE RESPOSTA]:\n"
-    "• Fale SEMPRE em PRIMEIRA PESSOA, com energia e concisão (1 a 3 frases diretas).\n"
-    "• NUNCA inclua rubricas narrativas entre asteriscos (ex: *olho furioso*) nem prefixos como 'Loomis:'. Responda diretamente a sua fala.\n"
-    "• Formate usando tags HTML válidas (<b>negrito</b>, <i>itálico</i>). NUNCA use formatação Markdown."
-)
-
-
-# =============================================================================
-# 2. Dataclass de Resultado dos Guardrails
+# 1. Dataclass de Resultado dos Guardrails
 # =============================================================================
 
 @dataclass
@@ -140,27 +113,9 @@ class ProfanityGuardrail:
                 found.extend(matches)
         return found
 
-    @classmethod
-    def censor_text(cls, text: str) -> str:
-        """Substitui termos ofensivos por asteriscos preservando a primeira e última letra."""
-        if not text:
-            return ""
-        normalized = cls.normalize_text(text)
-        censored = text
-        for pattern in cls._compiled_patterns:
-            for match in pattern.finditer(normalized):
-                span = match.span()
-                matched_str = text[span[0]:span[1]]
-                if len(matched_str) <= 2:
-                    rep = "*" * len(matched_str)
-                else:
-                    rep = matched_str[0] + ("*" * (len(matched_str) - 2)) + matched_str[-1]
-                censored = censored[:span[0]] + rep + censored[span[1]:]
-        return censored
-
 
 # =============================================================================
-# 4. Guardrail de Idioma (LanguageGuardrail)
+# 3. Guardrail de Idioma (LanguageGuardrail)
 # =============================================================================
 
 class LanguageGuardrail:
@@ -200,13 +155,13 @@ class LanguageGuardrail:
         "attack", "please", "now", "again", "listen"
     }
 
-    # Marcadores fortes de Espanhol (palavras gramaticais e termos exclusivos)
+    # Marcadores estritamente Espanhóis (palavras gramaticais e termos exclusivos)
     ES_MARKERS = {
-        "el", "la", "los", "las", "pero", "entonces", "estas", "estamos", "criatura",
-        "amigos", "ahora", "bienvenido", "bienvenidos", "listos", "fuego", "fuerza",
-        "fuerzas", "gracias", "nuestro", "vuestro", "hacia", "hasta", "sobre", "tras",
-        "adelante", "lucha", "monstruo", "espadas", "golpea", "mios", "mias", "mio",
-        "mia", "tu", "tus", "del", "al", "con", "en", "es", "son", "y"
+        "el", "los", "las", "pero", "entonces", "ahora", "bienvenido",
+        "bienvenidos", "listos", "fuego", "fuerza", "fuerzas", "gracias",
+        "nuestro", "vuestro", "hacia", "hasta", "adelante", "lucha",
+        "monstruo", "espadas", "golpea", "mios", "mias", "mio", "mia",
+        "tus", "del", "al", "con", "en", "es", "son", "y"
     }
 
     @classmethod

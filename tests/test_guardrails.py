@@ -54,12 +54,6 @@ class TestProfanityGuardrail:
         assert ProfanityGuardrail.contains_profanity(clean_phrase) is False
         assert ProfanityGuardrail.find_profanities(clean_phrase) == []
 
-    def test_censor_text(self):
-        text = "Que porra de monstro é esse?"
-        censored = ProfanityGuardrail.censor_text(text)
-        assert "porra" not in censored.lower()
-        assert "*" in censored
-
 
 class TestLanguageGuardrail:
     """Testes para detecção de língua estrangeira e garantia de pt-BR."""
