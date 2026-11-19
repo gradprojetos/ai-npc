@@ -13,6 +13,9 @@ down:
 logs:
 	docker compose logs -f
 
+test:
+	docker compose exec api uv run pytest
+
 migration:
 	docker compose run --rm api uv run alembic -c db/alembic.ini revision --autogenerate -m "$(name)"
 

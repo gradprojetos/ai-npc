@@ -1,33 +1,24 @@
 from logging.config import fileConfig
-import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from db.models import Base
+from db.session import DATABASE_URL
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-postgres_user = os.getenv("POSTGRES_USER", "postgres")
-postgres_password = os.getenv("POSTGRES_PASSWORD", "postgres")
-postgres_host = os.getenv("POSTGRES_HOST", "postgres")
-postgres_port = os.getenv("POSTGRES_PORT", "5432")
-postgres_db = os.getenv("POSTGRES_DB", "postgres")
-
-database_url = (
-    f"postgresql+psycopg://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}"
-)
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=database_url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
