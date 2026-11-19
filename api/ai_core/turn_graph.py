@@ -148,12 +148,9 @@ def tactical_advice_node(state: GameState) -> dict:
     context_parts: list[str] = []
     if monster and not monster.is_defeated and monster.hp > 0 and is_dispersion:
         context_parts.append(
-            f"Alerta Anti-Dispersão: O recruta tentou dispersão enquanto a fera está atacando!\n"
-            f"Instrução para Loomis: Adverta energicamente em personagem: 'Atenção, recruta! O {monster.name} "
-            f"está investindo contra você com mandíbulas abertas, não é hora de passear! Mantenha a guarda e ataque!'"
+            f"Alerta Anti-Dispersão: O recruta tentou dispersão enquanto a fera {monster.name} está atacando na arena. Loomis deve advertir para manter o foco e atacar."
         )
     else:
-        context_parts.append("Ação Livre (Conselho Tático): O recruta está pedindo orientação ou tirando dúvidas de combate.")
         if hero:
             context_parts.append(
                 f"Recruta ativo: {hero.name} ({hero.class_name}). Ataque principal: '{hero.attack_name}'. Poder especial: '{hero.special_power}'."
@@ -164,17 +161,13 @@ def tactical_advice_node(state: GameState) -> dict:
                 f"Fera na arena: {monster.name} (Jaula {monster.cage_number}, CA {monster.ac}, HP {monster.hp}/{monster.max_hp}). "
                 f"Habilidades da criatura: {abilities_str}."
             )
-            context_parts.append(
-                "Instrução para Loomis: Ofereça uma dica tática enérgica e prática explicando como aproveitar "
-                "o ataque principal e o poder especial do recruta contra a criatura, incentivando o próximo golpe."
-            )
         elif state.is_victory:
-            context_parts.append("Todas as jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
+            context_parts.append("Todas as 2 jaulas foram superadas! Parabenize os novos Heróis de Hesiod!")
 
     if state.npcs:
         state.npcs[0].system_prompt = TACTICAL_PROMPT
 
-    last_context = "\n".join(context_parts)
+    last_context = "\n".join(context_parts) if context_parts else None
     state.last_context = last_context
     return {
         "last_context": last_context,
@@ -192,28 +185,19 @@ def exploration_node(state: GameState) -> dict:
         beast = _get_active_monster(state) or get_cage_monster(1)
         _combat_started[state.session_id] = True
         _exploration_counters[state.session_id] = 0
-        context_parts = [
-            "<b>Dungeon Master:</b>",
-            f"• A Jaula {beast.cage_number} foi aberta e <b>{beast.name}</b> entrou na arena [HP: {beast.hp}/{beast.max_hp} | CA: {beast.ac}]!",
-            f"Gatilho Forçado de Combate: Loomis perdeu a paciência com o grupo após {count} mensagens de conversa, puxou a alavanca da Jaula 1 e mandou os recrutas assumirem formação!",
-        ]
+        last_context = (
+            "<b>Dungeon Master:</b>\n"
+            f"• A Jaula {beast.cage_number} foi aberta e <b>{beast.name}</b> entrou na arena [HP: {beast.hp}/{beast.max_hp} | CA: {beast.ac}]!\n"
+            f"Gatilho Forçado de Combate: Loomis perdeu a paciência com o grupo após {count} mensagens de conversa, puxou a alavanca da Jaula 1 e mandou os recrutas assumirem formação!"
+        )
     elif count >= 9:
-        context_parts = [
-            "Ação Livre (Roleplay e Exploração na Clareira de Treino):",
-            "Loomis impaciente: Responda brevemente ao que foi perguntado, mas corte a conversa mole e pressione com firmeza: "
-            "'Chega de conversa mole e de passar a mão na madeira da cabana, recrutas! As feras estão farejando o almoço. Vamos abrir a Jaula 1 ou vocês vão amarelar?'",
-        ]
+        last_context = "Situação: O grupo está conversando há muito tempo. Loomis impaciente: corte a conversa mole e pressione a abrir a Jaula 1."
     else:
-        context_parts = [
-            "Ação Livre (Roleplay e Exploração na Clareira de Treino):",
-            "Loomis acolhedor: Responda diretamente e com simpatia de veterano às perguntas sobre a vila de Hesiod, "
-            "as ferramentas, a cabana rústica e a poção de cura de menta e limão no caldeirão (que restaura a vida de quem cai inconsciente na luta). NUNCA termine repetindo frases feitas como 'quando estiverem prontos diga estamos prontos' (isso já foi explicado no início e só deve ser dito se o jogador perguntar expressamente como iniciar a prova).",
-        ]
+        last_context = ""
 
     if state.npcs:
         state.npcs[0].system_prompt = EXPLORATION_PROMPT
 
-    last_context = "\n".join(context_parts)
     state.last_context = last_context
     return {
         "last_context": last_context,
@@ -229,7 +213,7 @@ async def combat_node(state: GameState) -> dict:
         state.npcs[0].system_prompt = COMBAT_PROMPT
 
     if state.is_victory:
-        state.last_context = "Todas as 4 jaulas foram superadas! Parabenize os novos Heróis de Hesiod!"
+        state.last_context = "Todas as 2 jaulas foram superadas! Parabenize os novos Heróis de Hesiod!"
         return {
             "last_context": state.last_context,
             "players": state.players,
@@ -352,7 +336,7 @@ async def combat_node(state: GameState) -> dict:
     if (
         monster.is_half_hp_or_less
         and len([m for m in state.monsters if not m.is_defeated and m.hp > 0]) == 1
-        and monster.cage_number < 4
+        and monster.cage_number < 2
         and not has_fallen_hero
     ):
         next_cage = monster.cage_number + 1
@@ -372,9 +356,9 @@ async def combat_node(state: GameState) -> dict:
                 round_actions.append(f"• Loomis curou {', '.join(healed)} com a poção!")
 
             max_cage = max(m.cage_number for m in state.monsters) if state.monsters else monster.cage_number
-            if max_cage >= 4:
+            if max_cage >= 2:
                 state.is_victory = True
-                round_actions.append("• Todas as 4 jaulas foram superadas!")
+                round_actions.append("• Todas as 2 jaulas foram superadas!")
             else:
                 next_cage = max_cage + 1
                 next_beast = get_cage_monster(next_cage)
@@ -540,7 +524,7 @@ async def npc_node(state: GameState) -> dict:
         active_monster is not None and active_monster.is_defeated
     )
     if state.is_victory:
-        defeated_tag = "\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 4 jaulas foram vencidas! Parabenize toda a equipe como os novos Heróis de Hesiod!]"
+        defeated_tag = "\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 2 jaulas foram vencidas! Parabenize toda a equipe como os novos Heróis de Hesiod!]"
     elif monster_fell:
         defeated_tag = "\n[MONSTRO DERROTADO]"
     else:
@@ -556,22 +540,26 @@ async def npc_node(state: GameState) -> dict:
     is_solo = len(state.players) <= 1
     if state.is_victory:
         defeated_tag = (
-            f"\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 4 jaulas foram vencidas! Parabenize {hero_name} com entusiasmo como o novo Herói de Hesiod!]"
+            f"\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 2 jaulas foram vencidas! Parabenize {hero_name} com entusiasmo como o novo Herói de Hesiod!]"
             if is_solo
-            else "\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 4 jaulas foram vencidas! Parabenize toda a equipe como os novos Heróis de Hesiod!]"
+            else "\n[VITÓRIA FINAL DO TREINAMENTO: Todas as 2 jaulas foram vencidas! Parabenize toda a equipe como os novos Heróis de Hesiod!]"
         )
     elif monster_fell:
         defeated_tag = "\n[MONSTRO DERROTADO]"
     else:
         defeated_tag = ""
 
-    is_exploration = "Roleplay e Exploração" in (state.last_context or "")
+    is_exploration = (
+        effective_system_prompt == EXPLORATION_PROMPT
+        or "Situação: O grupo está conversando" in (state.last_context or "")
+    )
     if is_exploration and len(state.recent_messages) > 1:
         dialogue_history = "\n".join(
-            f"{m.sender}: {m.content}" for m in state.recent_messages[-11:-1]
+            f"{m.sender}: {m.content}" for m in state.recent_messages[-6:-1]
         )
+        ctx_header = f"Contexto do Treino e Ambiente:\n{state.last_context}\n\n" if state.last_context else ""
         prompt_context = (
-            f"Contexto do Treino e Ambiente:\n{state.last_context}\n\n"
+            f"{ctx_header}"
             f"Diálogo recente:\n{dialogue_history}\n\n"
             f"Última mensagem enviada por {hero_name}: \"{last_user_message}\""
         )
@@ -609,7 +597,7 @@ async def npc_node(state: GameState) -> dict:
     except Exception as e:
         logger.warning(f"Falha ao gerar fala do Loomis via LLM ({repr(e)}), usando fala padrão de treino.")
         if state.is_victory:
-            resposta_texto = "Vocês conseguiram, recrutas! Todas as 4 jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
+            resposta_texto = "Vocês conseguiram, recrutas! Todas as 2 jaulas foram superadas! Vocês agora são os verdadeiros Heróis de Hesiod!"
         elif monster_fell:
             resposta_texto = "A fera caiu! Excelente golpe, recrutas! Mas mantenham o foco que a próxima jaula está à frente!"
         elif "declare sua ação e o valor" in (state.last_context or ""):

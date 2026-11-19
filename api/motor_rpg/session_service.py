@@ -124,7 +124,7 @@ def finish_recruiting_for_session(session_id: str) -> tuple[bool, str, GameState
     briefing = (
         "<b>Dungeon Master:</b>\n"
         "O sol corta a floresta densa na clareira isolada atrás da cabana de treino. "
-        "Quatro pesadas jaulas de ferro reforçado repousam sob as árvores, e um som abafado de garras "
+        "Duas pesadas jaulas de ferro reforçado repousam sob as árvores, e um som abafado de garras "
         "arranhando a pedra ecoa pela mata. À frente de vocês, o lendário treinador Loomis cruza os braços "
         "fortes e fita os novos recrutas de Hesiod.\n\n"
         "<b>Loomis:</b>\n"

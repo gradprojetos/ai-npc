@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REQUEST_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "12.0"))
 DEFAULT_TEMPERATURE = 0.4
-DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "90"))
+DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS"))
 
 
 def _clean_env(value: str | None) -> str | None:

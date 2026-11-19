@@ -294,7 +294,7 @@ def apply_output_guardrails(
         # Fallback de acordo com a fase do jogo
         if is_victory:
             cleaned = (
-                "Vocês conseguiram, recrutas! Todas as 4 jaulas foram superadas! "
+                "Vocês conseguiram, recrutas! Todas as 2 jaulas foram superadas! "
                 "Vocês agora são os verdadeiros Heróis de Hesiod!"
             )
         elif monster_fell:

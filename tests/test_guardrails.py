@@ -146,7 +146,7 @@ class TestApplyOutputGuardrails:
         res = apply_output_guardrails(raw, is_victory=True)
         assert res.passed is False
         assert "foreign_language" in res.triggers
-        assert "Todas as 4 jaulas foram superadas!" in res.text
+        assert "Todas as 2 jaulas foram superadas!" in res.text
 
 
 class TestApplyInputGuardrails:
