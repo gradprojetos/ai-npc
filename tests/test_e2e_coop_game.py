@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from api.ai_core.orchestrator import process_npc_turn
@@ -66,6 +67,7 @@ async def execute_full_campaign_until_victory(session_id: str, players_config: l
                 user_message="ataco a fera com 20",
                 user_info={"session_id": session_id, "telegram_id": p_id, "first_name": p_name},
             )
+            await asyncio.sleep(0.5)
             st_check = get_or_create_session_state(session_id)
             if is_closing_action or st_check.is_victory:
                 last_closing_reply = reply
@@ -95,6 +97,7 @@ async def execute_full_campaign_until_victory(session_id: str, players_config: l
 
     log_test_turn(log_file, "VITÓRIA DA CAMPANHA", "Sistema / Loomis", "Fim da Partida", last_closing_reply)
     reset_game_session(session_id)
+    await asyncio.sleep(2.0)
 
 
 # =============================================================================
