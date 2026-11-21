@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from api.ai_core.orchestrator import process_npc_turn
@@ -66,6 +67,7 @@ async def execute_full_campaign_until_victory(session_id: str, players_config: l
                 user_message="ataco a fera com 20",
                 user_info={"session_id": session_id, "telegram_id": p_id, "first_name": p_name},
             )
+            await asyncio.sleep(0.5)
             st_check = get_or_create_session_state(session_id)
             if is_closing_action or st_check.is_victory:
                 last_closing_reply = reply
@@ -85,16 +87,17 @@ async def execute_full_campaign_until_victory(session_id: str, players_config: l
 
     # 5. Validações da Vitória
     assert victory_reached is True, f"Campanha para {num_players} jogador(es) não atingiu vitória em {max_rounds} rodadas."
-    assert "Todas as 4 jaulas foram superadas" in last_closing_reply or "Heróis de Hesiod" in last_closing_reply
+    assert "Todas as 2 jaulas foram superadas" in last_closing_reply or "Heróis de Hesiod" in last_closing_reply
 
     final_st = get_or_create_session_state(session_id)
     assert final_st.is_victory is True
     assert len(final_st.players) == num_players
     defeated_cages = {m.cage_number for m in final_st.monsters if m.is_defeated or m.hp <= 0}
-    assert {1, 2, 3, 4}.issubset(defeated_cages)
+    assert {1, 2}.issubset(defeated_cages)
 
     log_test_turn(log_file, "VITÓRIA DA CAMPANHA", "Sistema / Loomis", "Fim da Partida", last_closing_reply)
     reset_game_session(session_id)
+    await asyncio.sleep(2.0)
 
 
 # =============================================================================

@@ -66,7 +66,7 @@ HERO_ARCHETYPES: dict[str, dict[str, Any]] = {
     },
 }
 
-# Catálogo dos Monstros das 4 Jaulas
+# Catálogo dos Monstros das 2 Jaulas
 CAGE_MONSTERS: dict[int, dict[str, Any]] = {
     1: {
         "name": "Bullette Faminto",
@@ -93,33 +93,6 @@ CAGE_MONSTERS: dict[int, dict[str, Any]] = {
             "Flutuação aérea constante",
             "Disparo de raios oculares múltiplos",
             "Mordida voraz",
-        ],
-    },
-    3: {
-        "name": "Dragão Vermelho Jovem",
-        "cage_number": 3,
-        "ac": 14,
-        "hp": 10,
-        "max_hp": 10,
-        "attack_bonus": 5,
-        "attack_name": "Sopro de Fogo",
-        "abilities": [
-            "Sopro de chamas em cone",
-            "Mordida flamejante",
-        ],
-    },
-    4: {
-        "name": "Enxame de Pixies Ferais",
-        "cage_number": 4,
-        "ac": 10,
-        "hp": 11,
-        "max_hp": 11,
-        "attack_bonus": 3,
-        "attack_name": "Enxame Elétrico",
-        "abilities": [
-            "Diminutas e velozes",
-            "Ataque em bando coordenado",
-            "Descarga de estática mágica",
         ],
     },
 }
@@ -183,10 +156,10 @@ def create_hero(archetype_or_name: str | int, player_id: str = "player_1") -> He
 
 
 def get_cage_monster(cage_number: int) -> MonsterState:
-    """Retorna uma nova instância do monstro correspondente à jaula informada (1 a 4)."""
+    """Retorna uma nova instância do monstro correspondente à jaula informada (1 a 2)."""
     data = CAGE_MONSTERS.get(cage_number)
     if not data:
-        raise ValueError(f"Jaula {cage_number} não existe. Válidas: 1 a 4.")
+        raise ValueError(f"Jaula {cage_number} não existe. Válidas: 1 a 2.")
     return MonsterState(
         name=data["name"],
         hp=data["hp"],
